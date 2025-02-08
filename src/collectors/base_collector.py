@@ -80,23 +80,16 @@ class BaseCollector(ABC):
             raise
 
     def _get_latest_date(self, table_name: str, ticker: str) -> Optional[datetime]:
-        """
-        Get the latest date for a ticker.
-        """
         query = text(f"SELECT MAX(date) FROM {table_name} WHERE ticker = :ticker")
         
         try:
-            # Use a non-transactional connection for read-only operations.
             with self._db_connection(transactional=False) as conn:
                 result = conn.execute(query, {"ticker": ticker}).scalar()
                 return pd.to_datetime(result) if result else None
-        except exc.OperationalError as e:
-            if "no such table" in str(e).lower():
+        except Exception as e:
+            # If the table does not exist, duckdb errors typically include "does not exist"
+            if "does not exist" in str(e).lower():
                 return None
-            else:
-                logger.error(f"Operational error getting latest date for {ticker}: {e}")
-                raise
-        except SQLAlchemyError as e:
             logger.error(f"Error getting latest date for {ticker}: {e}")
             raise
 

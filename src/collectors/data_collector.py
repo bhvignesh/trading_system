@@ -9,7 +9,6 @@ from src.collectors.statements_collector import StatementsCollector
 from datetime import datetime
 import random
 from concurrent.futures import ThreadPoolExecutor
-from sqlalchemy import inspect, text
 
 # Configure logging
 logging.basicConfig(

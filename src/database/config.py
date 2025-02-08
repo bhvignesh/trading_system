@@ -16,5 +16,6 @@ class DatabaseConfig:
         """Generate a default configuration with the database in the 'data' folder."""
         base_path = Path(__file__).resolve().parent.parent.parent / "data"
         base_path.mkdir(exist_ok=True)  # Create 'data' directory if it doesn't exist
-        database_path = base_path / "trading_system.db"
-        return DatabaseConfig(url=f"sqlite:///{database_path}")
+        # Use a .duckdb extension for a DuckDB database file.
+        database_path = base_path / "trading_system.duckdb"
+        return DatabaseConfig(url=f"duckdb:///{database_path}")

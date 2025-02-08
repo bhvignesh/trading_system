@@ -6,10 +6,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import Dict, Optional
-from src.collectors.base_collector import BaseCollector
 from sqlalchemy import text, exc
 import json
 
+from src.collectors.base_collector import BaseCollector  
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class InfoCollector(BaseCollector):
         
         Args:
             nested_dict: A dictionary with potential nested structures.
-
+        
         Returns:
             A flat dictionary with nested keys concatenated.
         """
@@ -39,13 +39,14 @@ class InfoCollector(BaseCollector):
 
         flatten(nested_dict)
         return flat_dict
-    
+
     def _get_last_update_date(self, table_name: str, ticker: str) -> Optional[datetime]:
         """Get the last updated date for a specific ticker."""
         query = text(f"SELECT MAX(updated_at) FROM {table_name} WHERE ticker = :ticker")
         
         try:
-            with self.engine.connect() as conn:
+            # Use the base collector's context manager in non-transactional mode for reads.
+            with self._db_connection(transactional=False) as conn:
                 result = conn.execute(query, {"ticker": ticker}).scalar()
                 return pd.to_datetime(result) if result else None
         except exc.OperationalError as e:
@@ -63,37 +64,38 @@ class InfoCollector(BaseCollector):
             table_name: The name of the database table (default: 'company_info').
         """
         try:
-            # Check the last update date
+            # Check the last update date to decide if data refresh is necessary.
             last_update = self._get_last_update_date(table_name, ticker)
             if last_update and (datetime.now() - last_update < timedelta(days=30)):
                 logger.info(f"Skipping {ticker}: Data is less than 30 days old.")
                 return
 
-            # Fetch company information using yfinance
+            # Fetch company information using yfinance.
             stock = yf.Ticker(ticker)
             info = stock.info
 
             if not info:
                 logger.warning(f"No company info available for {ticker}.")
                 return
-            
-            # Convert lists/dicts to JSON strings
+
+            # Convert lists/dicts to JSON strings for safe storage.
             for key, value in info.items():
                 if isinstance(value, (list, dict)):
                     info[key] = json.dumps(value)
 
-            # Flatten and convert to DataFrame
+            # Flatten the nested dictionary and convert to a DataFrame.
             flat_info = self._flatten_nested_dict(info)
             info_df = pd.DataFrame([flat_info])
             info_df['ticker'] = ticker
             info_df['updated_at'] = datetime.now()
             info_df['data_source'] = 'yfinance'
 
-            # Ensure these columns exist even if source data is missing
+            # Ensure these critical columns exist even if missing from source data.
             for col in ['ticker', 'updated_at', 'data_source']:
                 if col not in info_df.columns:
                     info_df[col] = None
 
+            # Standardize column names.
             info_df.columns = (
                 info_df.columns.str.strip()
                 .str.lower()
@@ -101,10 +103,10 @@ class InfoCollector(BaseCollector):
                 .str.replace(r'[^\w_]', '', regex=True)
             )
 
-            # Ensure schema matches the DataFrame
+            # Ensure the database table schema matches the DataFrame.
             self._ensure_table_schema(table_name, info_df)
 
-            # Save data to the database
+            # Save the DataFrame to the database.
             required_columns = ['ticker', 'updated_at']
             self._save_to_database(info_df, table_name, required_columns)
             logger.info(f"Successfully fetched and saved data for {ticker} in {table_name}.")
@@ -122,7 +124,6 @@ class InfoCollector(BaseCollector):
             table_name: The name of the database table (default: 'company_info').
         """
         try:
-            # Simply fetch company info, as fetch_company_info handles refreshing logic
             self.fetch_company_info(ticker, table_name)
             logger.info(f"Successfully refreshed data for {ticker} in {table_name}.")
         except Exception as e:

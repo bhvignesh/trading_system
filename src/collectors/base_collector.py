@@ -1,17 +1,15 @@
 # trading_system/src/collectors/base_collector.py
 
-from typing import Callable, Optional, Dict, Any
+from typing import Optional
 from datetime import datetime
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
-from contextlib import contextmanager 
-from sqlalchemy import Integer, Float, String, DateTime, text, exc, inspect, DDL
-import pandas as pd
+from contextlib import contextmanager
+from sqlalchemy import exc, inspect, DDL
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
-
 
 logger = logging.getLogger(__name__)
 
@@ -23,29 +21,36 @@ class BaseCollector(ABC):
         Initialize collector with database engine and configuration.
         
         Args:
-            db_engine: SQLAlchemy engine object
+            db_engine: SQLAlchemy engine object.
         """
         self.engine = db_engine
-        
+
     @contextmanager
-    def _db_connection(self):
-        """Context manager for database connections with retry"""
-        connection = self.engine.connect()
-        try:
-            yield connection
-        finally:
-            connection.close()
+    def _db_connection(self, transactional: bool = True):
+        """
+        Context manager for database connections with optional transactions.
+        
+        Args:
+            transactional (bool): If True, uses a transactional connection (via engine.begin()).
+                                  Otherwise, uses a standard connection (engine.connect()).
+        """
+        if transactional:
+            with self.engine.begin() as connection:
+                yield connection
+        else:
+            with self.engine.connect() as connection:
+                yield connection
 
     def _validate_dataframe(self, df: pd.DataFrame, required_columns: list) -> bool:
         """
         Validate DataFrame structure and content.
         
         Args:
-            df: DataFrame to validate
-            required_columns: List of required column names
+            df: DataFrame to validate.
+            required_columns: List of required column names.
             
         Returns:
-            bool: True if validation passes
+            bool: True if validation passes, False otherwise.
         """
         if df is None or df.empty:
             return False
@@ -69,18 +74,20 @@ class BaseCollector(ABC):
         try:
             with self._db_connection() as conn:
                 conn.execute(query, {"ticker": ticker})
-                conn.commit()
             logger.info(f"Deleted existing data for {ticker} in {table_name}")
         except SQLAlchemyError as e:
             logger.error(f"Error deleting data for {ticker} in {table_name}: {e}")
             raise
 
     def _get_latest_date(self, table_name: str, ticker: str) -> Optional[datetime]:
-        """Get the latest date for a ticker."""
+        """
+        Get the latest date for a ticker.
+        """
         query = text(f"SELECT MAX(date) FROM {table_name} WHERE ticker = :ticker")
         
         try:
-            with self._db_connection() as conn:
+            # Use a non-transactional connection for read-only operations.
+            with self._db_connection(transactional=False) as conn:
                 result = conn.execute(query, {"ticker": ticker}).scalar()
                 return pd.to_datetime(result) if result else None
         except exc.OperationalError as e:
@@ -89,22 +96,22 @@ class BaseCollector(ABC):
             else:
                 logger.error(f"Operational error getting latest date for {ticker}: {e}")
                 raise
-        except exc.SQLAlchemyError as e:
+        except SQLAlchemyError as e:
             logger.error(f"Error getting latest date for {ticker}: {e}")
             raise
 
     @retry(stop=stop_after_attempt(3),
-       wait=wait_fixed(1),
-       retry=retry_if_exception_type(OperationalError))
+           wait=wait_fixed(1),
+           retry=retry_if_exception_type(OperationalError))
     def _save_to_database(self, df: pd.DataFrame, table_name: str, 
                          required_columns: list) -> None:
         """
         Save DataFrame to database with validation.
         
         Args:
-            df: DataFrame to save
-            table_name: Target table name
-            required_columns: List of required columns
+            df: DataFrame to save.
+            table_name: Target table name.
+            required_columns: List of required columns.
         """
         try:
             if not self._validate_dataframe(df, required_columns):
@@ -122,7 +129,6 @@ class BaseCollector(ABC):
                     method='multi',
                     chunksize=1000
                 )
-                conn.commit()
                 
             logger.info(f"Successfully saved {len(df)} rows to {table_name}")
             
@@ -142,27 +148,25 @@ class BaseCollector(ABC):
             table_name: Name of the database table.
             data: DataFrame whose columns are used to verify or build the table schema.
         """
-        with self.engine.connect() as conn:
+        with self._db_connection() as conn:
             inspector = inspect(conn)
             
-            # If the table does not exist, create it atomically using IF NOT EXISTS
+            # If the table does not exist, create it atomically using IF NOT EXISTS.
             if not inspector.has_table(table_name):
-                # Generate column definitions for table creation
                 columns = []
                 for col in data.columns:
                     if pd.api.types.is_integer_dtype(data[col]):
                         col_type = "INTEGER"
                     elif pd.api.types.is_float_dtype(data[col]):
-                        col_type = "FLOAT"
+                        col_type = "FLOAT"  # You might also consider "DOUBLE" for precision.
                     elif pd.api.types.is_datetime64_any_dtype(data[col]):
-                        col_type = "DATETIME"
+                        col_type = "TIMESTAMP"  # Updated for DuckDB compatibility.
                     else:
                         col_type = "VARCHAR"
                     
-                    # Quote column names to handle reserved words or special characters
+                    # Quote column names to handle reserved words or special characters.
                     columns.append(f'"{col}" {col_type}')
                 
-                # Construct the DDL statement using IF NOT EXISTS to avoid race conditions
                 create_table = DDL(
                     f"""CREATE TABLE IF NOT EXISTS {table_name} (
                         {', '.join(columns)}
@@ -171,29 +175,25 @@ class BaseCollector(ABC):
                 
                 try:
                     conn.execute(create_table)
-                    conn.commit()
                     logger.info(f"Created table {table_name} with IF NOT EXISTS")
-                except exc.SQLAlchemyError as e:
+                except SQLAlchemyError as e:
                     logger.error(f"Error creating table {table_name}: {e}")
                     raise
-                return  # Table has been created, so exit early.
+                return  # Table created successfully.
             
             # If the table already exists, check for missing columns.
             existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
-            # Compare using the original column names, assuming they match exactly.
             missing_columns = [col for col in data.columns if col not in existing_columns]
 
             if missing_columns:
-                # Use the engine's identifier preparer to properly quote column names.
                 preparer = self.engine.dialect.identifier_preparer
                 for column in missing_columns:
-                    # Determine the SQL type for the column based on the DataFrame dtype.
                     if pd.api.types.is_integer_dtype(data[column]):
                         col_type = "INTEGER"
                     elif pd.api.types.is_float_dtype(data[column]):
-                        col_type = "FLOAT"
+                        col_type = "FLOAT"  # Or "DOUBLE"
                     elif pd.api.types.is_datetime64_any_dtype(data[column]):
-                        col_type = "DATETIME"
+                        col_type = "TIMESTAMP"  # Updated for DuckDB.
                     else:
                         col_type = "VARCHAR"
                         
@@ -203,14 +203,11 @@ class BaseCollector(ABC):
                         conn.execute(text(alter_sql))
                         logger.info(f"Added column {column_quoted} to {table_name}")
                     except exc.OperationalError as e:
-                        # If the error is due to a duplicate column, log a warning and continue.
                         if "duplicate column" in str(e).lower():
                             logger.warning(f"Column {column} already exists in {table_name}, skipping.")
                         else:
                             logger.error(f"Error adding column {column}: {e}")
                             raise
-                conn.commit()
-
 
     @abstractmethod
     def refresh_data(self, ticker: str, **kwargs) -> None:
@@ -218,7 +215,7 @@ class BaseCollector(ABC):
         Refresh data for a specific ticker.
         
         Args:
-            ticker: Ticker symbol
-            **kwargs: Additional arguments specific to each collector
+            ticker: Ticker symbol.
+            **kwargs: Additional arguments specific to each collector.
         """
         pass

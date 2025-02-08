@@ -1,4 +1,5 @@
 # trading_system/src/collectors/statements_collector.py
+
 import logging
 import yfinance as yf
 import pandas as pd
@@ -9,13 +10,13 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+
 class StatementsCollector(BaseCollector):
     """Collect financial statements using yfinance and store them in the database."""
 
     def __init__(self, db_engine):
         """
         Initialize the StatementsCollector with a database engine.
-            
         """
         super().__init__(db_engine)
         self.financial_statements = [
@@ -27,51 +28,55 @@ class StatementsCollector(BaseCollector):
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def fetch_financial_statement(self, ticker: str, statement_type: str, fetch_function: Callable) -> None:
         """
-        Fetch and process financial statements.
+        Fetch and process a financial statement for a given ticker.
 
         Args:
-            ticker: Ticker symbol
-            statement_type: Type of statement (e.g., 'balance_sheet')
-            fetch_function: Function to fetch the statement from yfinance
+            ticker: Ticker symbol.
+            statement_type: Type of statement (e.g., 'balance_sheet').
+            fetch_function: Callable to fetch the statement from yfinance.
         """
         try:
             table_name = statement_type.lower()
             latest_date = self._get_latest_date(table_name, ticker)
 
-            # Skip fetching if data is already up-to-date
+            # Skip fetching if the data is already up-to-date (within 40 days)
             if latest_date and (datetime.now() - latest_date < timedelta(days=40)):
-                logger.info(f"Skipping {ticker} {statement_type} - data is up to date.")
+                logger.info(f"Skipping {ticker} {statement_type} – data is up to date.")
                 return
 
-            # Fetch financial data
+            # Fetch financial data using yfinance.
             stock = yf.Ticker(ticker)
             data = fetch_function(stock)
 
-            # Handle cases where no data is returned
+            # Handle cases where no valid data is returned.
             if data is None:
-                logger.warning(f"No data returned for {ticker} {statement_type}")
+                logger.warning(f"No data returned for {ticker} {statement_type}.")
                 return
             if not isinstance(data, pd.DataFrame):
-                logger.warning(f"Unexpected data type {type(data)} for {statement_type}")
+                logger.warning(f"Unexpected data type {type(data)} for {statement_type}.")
                 return
-            if data is None or data.empty:
+            if data.empty:
                 logger.warning(f"No {statement_type} data available for {ticker}.")
                 return
 
-            # Process the data
-            data = data.fillna(pd.NA).infer_objects(copy=False).T 
+            # Process the data:
+            #   - Fill missing values,
+            #   - Transpose the DataFrame so that dates become a column,
+            #   - Reset the index to bring the original index (dates) into a column.
+            data = data.fillna(pd.NA).infer_objects(copy=False).T
             data['ticker'] = ticker
             data = data.reset_index().rename(columns={'index': 'date'})
 
-            # Filter out old data if latest_date is available
+            # If a latest date exists, filter out any rows that are not newer.
             if latest_date:
                 data = data[data['date'] > latest_date]
 
             if not data.empty:
-                # Add metadata columns
+                # Add metadata columns.
                 data['updated_at'] = datetime.now()
                 data['data_source'] = 'yfinance'
 
+                # Standardize column names.
                 data.columns = (
                     data.columns.str.strip()
                     .str.lower()
@@ -79,10 +84,10 @@ class StatementsCollector(BaseCollector):
                     .str.replace(r'[^\w_]', '', regex=True)
                 )
 
-                # Dynamically update database schema if needed
+                # Ensure the database table schema matches the DataFrame.
                 self._ensure_table_schema(table_name, data)
 
-                # Save to database
+                # Save to the database; ensure critical columns exist.
                 required_columns = ['date', 'ticker', 'updated_at']
                 self._save_to_database(data, table_name, required_columns)
 
@@ -91,5 +96,10 @@ class StatementsCollector(BaseCollector):
             raise
 
     def refresh_data(self, ticker: str) -> None:
-        """Intentionally left empty - statements don't need refreshing"""
+        """
+        Intentionally left empty – financial statements are not refreshed automatically.
+        
+        Args:
+            ticker: Ticker symbol.
+        """
         pass

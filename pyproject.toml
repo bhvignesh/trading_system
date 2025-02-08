@@ -14,6 +14,8 @@ openpyxl = "^3.1.5"
 sqlalchemy = "^2.0.37"
 tenacity = "^9.0.0"
 pytest = "^8.3.4"
+duckdb = "^1.2.0"
+duckdb-engine = "^0.15.0"
 
 
 [build-system]

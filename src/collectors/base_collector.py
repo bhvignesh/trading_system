@@ -72,7 +72,7 @@ class BaseCollector(ABC):
         query = text(f"DELETE FROM {table_name} WHERE ticker = :ticker")
         
         try:
-            with self._db_connection() as conn:
+            with self._db_connection(transactional=True) as conn:
                 conn.execute(query, {"ticker": ticker})
             logger.info(f"Deleted existing data for {ticker} in {table_name}")
         except SQLAlchemyError as e:
@@ -141,7 +141,7 @@ class BaseCollector(ABC):
             table_name: Name of the database table.
             data: DataFrame whose columns are used to verify or build the table schema.
         """
-        with self._db_connection() as conn:
+        with self._db_connection(transactional=False) as conn:
             inspector = inspect(conn)
             
             # If the table does not exist, create it atomically using IF NOT EXISTS.

@@ -2,7 +2,7 @@
 
 from sqlalchemy import create_engine, exc, event, text
 import logging
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,13 @@ def create_db_engine(config):
         # Configure engine with explicit pooling settings
         engine = create_engine(
             config.url,
-            poolclass=QueuePool,
-            pool_size=config.pool_size,
-            max_overflow=config.max_overflow,
-            pool_timeout=30,  # Wait up to 30 seconds for a connection
-            pool_pre_ping=True,  # Check connection health before using
-            isolation_level='AUTOCOMMIT'  # Use autocommit mode for DuckDB
+            poolclass=NullPool
+            # poolclass=QueuePool,
+            # pool_size=config.pool_size,
+            # max_overflow=config.max_overflow,
+            #  pool_timeout=30,  # Wait up to 30 seconds for a connection
+            # pool_pre_ping=True,  # Check connection health before using
+            # isolation_level='AUTOCOMMIT'  # Use autocommit mode for DuckDB
         )
         
         # Optional: Validate connection health

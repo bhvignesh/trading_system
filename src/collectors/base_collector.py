@@ -32,7 +32,7 @@ class BaseCollector(ABC):
         
         Args:
             transactional (bool): If True, uses a transactional connection.
-                                If False, uses autocommit mode.
+                                If False, uses autocommit mode (DuckDB's default).
         """
         connection = self.engine.connect()
         try:
@@ -40,7 +40,6 @@ class BaseCollector(ABC):
                 with connection.begin():
                     yield connection
             else:
-                connection.execution_options(isolation_level="AUTOCOMMIT")
                 yield connection
         finally:
             connection.close()

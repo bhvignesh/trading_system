@@ -29,10 +29,6 @@ class BaseCollector(ABC):
     def _db_connection(self, transactional: bool = True):
         """
         Context manager for database connections with optional transactions.
-        
-        Args:
-            transactional (bool): If True, uses a transactional connection.
-                                If False, uses autocommit mode (DuckDB's default).
         """
         connection = self.engine.connect()
         try:
@@ -40,6 +36,7 @@ class BaseCollector(ABC):
                 with connection.begin():
                     yield connection
             else:
+                # For non-transactional operations, we're already in autocommit mode
                 yield connection
         finally:
             connection.close()
@@ -83,14 +80,15 @@ class BaseCollector(ABC):
             raise
 
     def _get_latest_date(self, table_name: str, ticker: str) -> Optional[datetime]:
+        """Get the latest date for a specific ticker."""
         query = text(f"SELECT MAX(date) FROM {table_name} WHERE ticker = :ticker")
         
         try:
-            with self._db_connection(transactional=False) as conn:
+            # Use a fresh connection in autocommit mode
+            with self.engine.connect() as conn:
                 result = conn.execute(query, {"ticker": ticker}).scalar()
                 return pd.to_datetime(result) if result else None
         except Exception as e:
-            # If the table does not exist, duckdb errors typically include "does not exist"
             if "does not exist" in str(e).lower():
                 return None
             logger.error(f"Error getting latest date for {ticker}: {e}")

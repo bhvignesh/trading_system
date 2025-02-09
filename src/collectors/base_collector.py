@@ -31,15 +31,19 @@ class BaseCollector(ABC):
         Context manager for database connections with optional transactions.
         
         Args:
-            transactional (bool): If True, uses a transactional connection (via engine.begin()).
-                                  Otherwise, uses a standard connection (engine.connect()).
+            transactional (bool): If True, uses a transactional connection.
+                                If False, uses autocommit mode.
         """
-        if transactional:
-            with self.engine.begin() as connection:
+        connection = self.engine.connect()
+        try:
+            if transactional:
+                with connection.begin():
+                    yield connection
+            else:
+                connection.execution_options(isolation_level="AUTOCOMMIT")
                 yield connection
-        else:
-            with self.engine.connect() as connection:
-                yield connection
+        finally:
+            connection.close()
 
     def _validate_dataframe(self, df: pd.DataFrame, required_columns: list) -> bool:
         """
@@ -113,7 +117,7 @@ class BaseCollector(ABC):
             # Handle NaN values consistently
             df = df.replace([pd.NA, pd.NaT], None)
             
-            with self._db_connection() as conn:
+            with self._db_connection(transactional=True) as conn:
                 df.to_sql(
                     name=table_name,
                     con=conn,

@@ -2,6 +2,7 @@
 
 from sqlalchemy import create_engine, exc, event, text
 import logging
+from sqlalchemy.pool import QueuePool
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,21 @@ def create_db_engine(config):
         engine: A SQLAlchemy engine instance.
     """
     try:
+        # Configure engine with explicit pooling settings
         engine = create_engine(
             config.url,
+            poolclass=QueuePool,
             pool_size=config.pool_size,
             max_overflow=config.max_overflow,
+            pool_timeout=30,  # Wait up to 30 seconds for a connection
+            pool_pre_ping=True,  # Check connection health before using
+            isolation_level='AUTOCOMMIT'  # Use autocommit mode for DuckDB
         )
         
-        # Optional: Validate connection health.
+        # Optional: Validate connection health
         @event.listens_for(engine, "engine_connect")
         def ping_connection(connection, branch):
-            if branch:  # Skip validation for sub-transactions.
+            if branch:  # Skip validation for sub-transactions
                 return
             try:
                 connection.scalar(text("SELECT 1"))

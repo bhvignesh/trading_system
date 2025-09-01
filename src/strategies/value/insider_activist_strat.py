@@ -15,10 +15,11 @@ signal. This score can be used to rank and compare tickers for special situation
 and default parameters are optimized for the Indian NSE/BSE markets.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 from datetime import datetime
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

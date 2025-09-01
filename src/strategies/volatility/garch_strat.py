@@ -1,20 +1,22 @@
 # trading_system/src/strategies/volatality/garch_strat.py
 
-import pandas as pd
-import numpy as np
-import warnings
-from arch import arch_model
-from typing import Dict, Optional, Union, List, Any # Added Any
-from sqlalchemy import text, bindparam # Added for static query execution
-from time import perf_counter # Added for static query execution
-
-from joblib import Parallel, delayed
-import multiprocessing
 import logging
+import multiprocessing
+import warnings
+from time import perf_counter  # Added for static query execution
+from typing import Any, Dict, List, Optional, Union  # Added Any
 
-from src.strategies.base_strat import BaseStrategy # Keep for GARCHModel inheritance
+import numpy as np
+import pandas as pd
+from arch import arch_model
+from joblib import Parallel, delayed
+from sqlalchemy import bindparam, text  # Added for static query execution
+
 from src.database.config import DatabaseConfig
-from src.database.engine import create_db_engine # For creating engine in worker
+from src.database.engine import \
+    create_db_engine  # For creating engine in worker
+from src.strategies.base_strat import \
+    BaseStrategy  # Keep for GARCHModel inheritance
 from src.strategies.risk_management import RiskManager
 
 # --- Helper functions for parallel processing ---

@@ -1,10 +1,11 @@
 # trading_system/src/strategies/graham_defensive_strategy.py
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 import logging
 from datetime import datetime
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

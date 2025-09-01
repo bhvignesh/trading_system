@@ -1,11 +1,13 @@
 # trading_system/src/collectors/statements_collector.py
 import logging
-import yfinance as yf
-import pandas as pd
-from tenacity import retry, stop_after_attempt, wait_exponential
 from datetime import datetime, timedelta
-from src.collectors.base_collector import BaseCollector
 from typing import Callable
+
+import pandas as pd
+import yfinance as yf
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from src.collectors.base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +21,9 @@ class StatementsCollector(BaseCollector):
         """
         super().__init__(db_engine)
         self.financial_statements = [
-            ('balance_sheet', lambda stock: stock.balance_sheet),
-            ('income_statement', lambda stock: stock.income_stmt),
-            ('cash_flow', lambda stock: stock.cash_flow)
+            ('balance_sheet', lambda stock: stock.get_balance_sheet()),
+            ('income_statement', lambda stock: stock.get_income_stmt()),
+            ('cash_flow', lambda stock: stock.get_cash_flow())
         ]
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))

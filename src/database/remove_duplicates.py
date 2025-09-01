@@ -1,9 +1,11 @@
 # trading_system/src/database/remove_dupliactes.py
 
 import logging
-from sqlalchemy import text
-import sys
 import os
+import sys
+
+from sqlalchemy import text
+
 print(os.getcwd())
 # Determine the absolute path to the root directory (assuming the script is one level down)
 root_path = os.path.abspath(os.getcwd())
@@ -59,8 +61,9 @@ def clean_duplicate_dates(db_config: DatabaseConfig):
             engine.dispose()
 
 if __name__ == "__main__":
-    from src.database.config import DatabaseConfig
     import logging
+
+    from src.database.config import DatabaseConfig
     
     logging.basicConfig(level=logging.INFO)
     db_config = DatabaseConfig.default()

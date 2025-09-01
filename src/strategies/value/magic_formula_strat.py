@@ -14,9 +14,10 @@ The strategy uses vectorized operations for speed and falls back to company info
 only when the required fields are missing from the financial statements.
 """
 
-import pandas as pd
+from typing import Dict, List, Optional, Union
+
 import numpy as np
-from typing import Dict, Optional, List, Union
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

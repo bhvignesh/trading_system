@@ -1,10 +1,12 @@
 # trading_system/src/strategies/volatality/volatility_breakout.py
 
-import pandas as pd
+from typing import Dict, List, Optional, Union
+
 import numpy as np
-from typing import Dict, Optional, Union, List
-from src.strategies.base_strat import BaseStrategy
+import pandas as pd
+
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
 
 

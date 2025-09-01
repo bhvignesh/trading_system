@@ -1,9 +1,10 @@
 # trading_system/src/strategies/momentum/coppock_curve_strat.py
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError

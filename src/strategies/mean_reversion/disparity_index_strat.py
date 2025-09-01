@@ -1,13 +1,15 @@
 # trading_system/src/strategies/disparity_index_strat.py
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 import logging
+from typing import Dict, List, Optional, Union
 
+import numpy as np
+import pandas as pd
+
+from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
-from src.database.config import DatabaseConfig
+
 
 class DisparityIndexStrategy(BaseStrategy):
     """

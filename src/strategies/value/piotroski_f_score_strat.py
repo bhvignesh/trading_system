@@ -1,9 +1,12 @@
 # trading_system/src/strategies/piotroski_fscore_strategy.py
 
-import pandas as pd
+from typing import Dict, List, Optional, Union
+
 import numpy as np
-from typing import Dict, Optional, Union, List
+import pandas as pd
+
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+
 
 class PiotroskiFScoreStrategy(BaseStrategy):
     """

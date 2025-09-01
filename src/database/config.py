@@ -1,8 +1,9 @@
 # trading_system/src/database/config.py
 
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
 
 @dataclass
 class DatabaseConfig:

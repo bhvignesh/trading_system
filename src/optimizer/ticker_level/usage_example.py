@@ -6,11 +6,13 @@ Usage Example:
   run the hyperparameter search, and log everything using mlflow.
 """
 
-from optimizer.ticker_level.strategy_optimizer import StrategyOptimizer
-from optimizer.ticker_level.sensitivity_analyzer import SensitivityAnalyzer
-from src.strategies.momentum.awesome_oscillator_strat import AwesomeOscillatorStrategy
-from hyperopt import hp
 import mlflow
+from hyperopt import hp
+
+from optimizer.ticker_level.sensitivity_analyzer import SensitivityAnalyzer
+from optimizer.ticker_level.strategy_optimizer import StrategyOptimizer
+from src.strategies.momentum.awesome_oscillator_strat import \
+    AwesomeOscillatorStrategy
 
 # Example configuration
 db_config = {"host": "localhost", "port": 1234}

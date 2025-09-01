@@ -1,13 +1,17 @@
 # trading_system/src/strategies/buy_and_hold_strategy.py
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
 
-from src.strategies.base_strat import BaseStrategy # Assuming BaseStrategy is in this path
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strat import \
+    BaseStrategy  # Assuming BaseStrategy is in this path
 # from src.database.config import DatabaseConfig # Only if you were to run this standalone for testing
-from src.strategies.risk_management import RiskManager # Assuming RiskManager is in this path
+from src.strategies.risk_management import \
+    RiskManager  # Assuming RiskManager is in this path
+
 
 class BuyAndHoldStrategy(BaseStrategy):
     """

@@ -1,6 +1,8 @@
 # utils.py
 import sqlite3
+
 import pandas as pd
+
 
 def query_to_dataframe(query, db_path):
     """

@@ -1,11 +1,12 @@
 # trading_system/src/collectors/price_collector.py
 
 import logging
-import yfinance as yf
-import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional
-from src.collectors.base_collector import BaseCollector
+
+import pandas as pd
+import yfinance as yf
+
+from .base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
 

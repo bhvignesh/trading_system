@@ -1,16 +1,18 @@
 scripts/
 # Ignore Python cache files
 __pycache__/
+*/__pycache__/
 *.py[cod]
 # Ignore Jupyter Notebook checkpoints
 notebooks/old/
 *.ipynb_checkpoints/
-*/__pycache__/
 test_trading_system.db
 src/data/trading_system.db
 src/data/trading_system.db-journal
 data/
-mlruns/
 cache_dir/
 hyperopt_cache/
-
+# Ignore MLFlow outputs
+notebooks/*.json
+notebooks/*.csv
+mlruns/

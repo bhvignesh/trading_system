@@ -4,16 +4,18 @@
 Base strategy class for implementing trading strategies with database operations and signal storage.
 """
 
-from abc import ABC, abstractmethod
-import pandas as pd
 import logging
-from typing import Dict, Optional, Union, List, Any, Tuple
-from sqlalchemy import text, bindparam, MetaData, Table, select
+from abc import ABC, abstractmethod
+from datetime import datetime
 from time import perf_counter
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import pandas as pd
+from sqlalchemy import MetaData, Table, bindparam, select, text
 
 from src.database.config import DatabaseConfig
 from src.database.engine import create_db_engine
+
 
 class DataRetrievalError(Exception):
     """Exception raised when data retrieval fails."""

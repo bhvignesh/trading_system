@@ -1,9 +1,10 @@
 # trading_system/src/strategies/choppiness_index_strat.py
 
+import logging
+from typing import Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import Dict, Optional, Union, List
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError

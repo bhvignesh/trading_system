@@ -1,15 +1,16 @@
 # trading_system/src/collectors/info_collector.py
 
-import logging
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timedelta
-from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Dict, Optional
-from src.collectors.base_collector import BaseCollector
-from sqlalchemy import text, exc
 import json
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, Optional
 
+import pandas as pd
+import yfinance as yf
+from sqlalchemy import exc, text
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from src.collectors.base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
 

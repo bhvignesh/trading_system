@@ -1,10 +1,12 @@
 # trading_system/src/database/engine.py
 
-import time
 import logging
-from sqlalchemy import create_engine, exc, event, text, Index
-from sqlalchemy.pool import StaticPool, QueuePool
+import time
+
+from sqlalchemy import Index, create_engine, event, exc, text
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool, StaticPool
+
 from .config import DatabaseConfig
 
 logger = logging.getLogger(__name__)

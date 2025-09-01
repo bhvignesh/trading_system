@@ -1,13 +1,15 @@
 # trading_system/src/strategies/momentum/sma_crossover_strat.py
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
-from src.strategies.risk_management import RiskManager # Ensure correct import path
+from src.strategies.risk_management import \
+    RiskManager  # Ensure correct import path
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)

@@ -1,5 +1,3 @@
-Claude test cases
-
 # trading_system/tests/database/test_config.py
 
 import pytest
@@ -92,7 +90,6 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy import create_engine
 from src.collectors.base_collector import BaseCollector
-from sqlalchemy.exc import SQLAlchemyError
 
 class TestCollector(BaseCollector):
     """Test implementation of BaseCollector for testing."""

@@ -1,12 +1,13 @@
 # trading_system/src/strategies/volatality/atr_trailing_stops.py
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
-import numba # For performance optimization
+from typing import Dict, List, Optional, Union
 
-from src.strategies.base_strat import BaseStrategy
+import numba  # For performance optimization
+import numpy as np
+import pandas as pd
+
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy
 # Assuming RiskManager is in this path based on the original import
 from src.strategies.risk_management import RiskManager
 

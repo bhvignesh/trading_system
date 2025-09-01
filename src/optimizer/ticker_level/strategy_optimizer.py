@@ -8,17 +8,18 @@ using walk-forward cross-validation and hyperparameter search. It leverages
 MLflow for experiment tracking and implements caching for efficient evaluation.
 """
 
-import logging
-import numpy as np
-import pandas as pd
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Type, Tuple
-import mlflow
-from hyperopt import fmin, tpe, Trials, STATUS_OK, space_eval
 import hashlib
 import json
-from multiprocessing import Pool, cpu_count
+import logging
+from datetime import datetime, timedelta
 from functools import partial
+from multiprocessing import Pool, cpu_count
+from typing import Any, Dict, List, Optional, Tuple, Type
+
+import mlflow
+import numpy as np
+import pandas as pd
+from hyperopt import STATUS_OK, Trials, fmin, space_eval, tpe
 
 from optimizer.ticker_level.performance_evaluator import PerformanceEvaluator
 

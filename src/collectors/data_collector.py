@@ -1,16 +1,16 @@
 # trading_system/src/collectors/data_collector.py
 
 import logging
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import Any, Dict, List
 
+from src.collectors.info_collector import InfoCollector
+from src.collectors.price_collector import PriceCollector
+from src.collectors.statements_collector import StatementsCollector
 from src.database.config import DatabaseConfig
 from src.database.engine import create_db_engine
-from src.collectors.price_collector import PriceCollector
-from src.collectors.info_collector import InfoCollector
-from src.collectors.statements_collector import StatementsCollector
 
 logging.basicConfig(
     level=logging.INFO,

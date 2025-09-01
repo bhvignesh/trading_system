@@ -1,11 +1,13 @@
 # trading_system/src/strategies/volatality/volatility_squeeze.py
 
-import pandas as pd
+from typing import Dict, List, Optional, Union
+
 import numpy as np
+import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
-from typing import Dict, Optional, Union, List
-from src.strategies.base_strat import BaseStrategy
+
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
 
 

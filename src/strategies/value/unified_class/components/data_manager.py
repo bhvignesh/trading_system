@@ -5,14 +5,13 @@ Data retrieval and management for value strategy implementation.
 Handles caching and efficient data retrieval.
 """
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, List, Optional, Union, Any, Tuple
-from datetime import datetime, timedelta
-from functools import lru_cache
+from datetime import timedelta
+from typing import Dict, List, Union
 
+import pandas as pd
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+
 
 class FinancialDataManager:
     """

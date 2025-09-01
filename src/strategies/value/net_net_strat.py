@@ -30,10 +30,11 @@ The returned DataFrame contains the following columns:
    • signal = 1 if price < (0.66 * NCAV), else 0.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 from datetime import datetime
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

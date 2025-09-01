@@ -7,23 +7,22 @@ Analyzes the impact of parameter perturbations on portfolio-level metrics
 by leveraging the StrategyOptimizer's evaluation capabilities.
 """
 
+import json
 import logging
-import numpy as np
-import pandas as pd
-from typing import Any, Dict, List, Optional, Tuple
-import mlflow
-from scipy.stats import spearmanr, pearsonr
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm.auto import tqdm # Use auto version for better notebook compatibility
 import traceback
 from datetime import datetime
-import json
+from typing import Any, Dict, List, Optional, Tuple
 
-# Assuming StrategyOptimizer is in the same directory or accessible via path
-from .strategy_optimizer import StrategyOptimizer
+import mlflow
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+from tqdm.auto import \
+    tqdm  # Use auto version for better notebook compatibility
+
 # Assuming MetricsDict is defined in performance_evaluator
-from .performance_evaluator import MetricsDict
-
+# Assuming StrategyOptimizer is in the same directory or accessible via path
+from src.optimizer.strategy_optimizer import StrategyOptimizer
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)

@@ -5,10 +5,12 @@ Financial metrics calculation for value investing strategies.
 Implements various ratio and valuation metric calculations.
 """
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+
 
 class FinancialMetricsCalculator:
     """

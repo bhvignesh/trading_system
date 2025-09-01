@@ -1,10 +1,12 @@
 # trading_system/src/strategies/adx_strat.py
 
+import logging
+from typing import Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
-from numba import njit, prange # Added prange for potential parallel loops if beneficial
-from typing import Optional, Dict, Union, List
-import logging
+from numba import (  # Added prange for potential parallel loops if beneficial
+    njit, prange)
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager

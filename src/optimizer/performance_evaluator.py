@@ -9,10 +9,11 @@ multiple assets. It also includes a method for single-asset analysis.
 """
 
 import logging
+from typing import Dict, List, Optional, Tuple, Union
+
+import mlflow
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Union
-import mlflow
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)

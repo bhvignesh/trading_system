@@ -47,23 +47,24 @@ Key Features:
    - Smart forecast method selection based on horizon length
 """
 
-import os
-import numpy as np
-import pandas as pd
-import logging
-import pickle
+import gc
 import hashlib
 import json
+import logging
+import os
+import pickle
 import warnings
-import gc
-from typing import Dict, Optional, Union, List, Tuple, Any
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (ThreadPoolExecutor,
+                                as_completed)
+from datetime import datetime
 from functools import lru_cache, wraps
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
+import pandas as pd
 from arch import arch_model
-from sklearn.decomposition import PCA
 from joblib import Parallel, delayed, dump, load
+from sklearn.decomposition import PCA
 
 # Try to import optional performance libraries
 try:
@@ -86,8 +87,8 @@ except ImportError:
     HAS_BOTTLENECK = False
     warnings.warn("Bottleneck not installed. Using pandas for rolling operations (slower).")
 
-from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
 
 # Suppress arch convergence warnings during batch operations

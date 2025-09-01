@@ -33,10 +33,11 @@ Default parameters provided below are optimized for the Indian market (NSE/BSE),
 them via the params dict.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 from datetime import datetime
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

@@ -31,12 +31,12 @@ The final composite score is calculated from normalized components:
 A higher final score indicates a more attractive opportunity under the QARP criteria.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
-from datetime import datetime
+from typing import Dict, List, Optional, Union
 
-from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+import numpy as np
+import pandas as pd
+
+from src.strategies.base_strat import BaseStrategy
 
 
 class BuffettsQualityAtReasonablePriceStrategy(BaseStrategy):

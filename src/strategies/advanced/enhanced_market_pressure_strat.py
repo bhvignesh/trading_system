@@ -13,16 +13,18 @@ Filter out false signals that might occur due to gaps
 
 """strat credit: https://www.jamessawyer.co.uk/market-pressure-analysis-page.html"""
 
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
-from scipy.stats import beta, kstest, norm
 import warnings
+from typing import Dict, List, Optional, Union
 
-from src.strategies.base_strat import BaseStrategy
+import numpy as np
+import pandas as pd
+from scipy.stats import beta, kstest, norm
+
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
+
 
 class EnhancedMarketPressureStrategy(BaseStrategy):
     """

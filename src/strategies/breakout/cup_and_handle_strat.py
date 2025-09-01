@@ -1,14 +1,16 @@
 # trading_system/src/strategies/cup_and_handle.py
 
-import pandas as pd
-import numpy as np
-from scipy.signal import argrelextrema
-from typing import Dict, Optional, List, Tuple, Union, Any
 import logging
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+import numpy as np
+import pandas as pd
+from scipy.signal import argrelextrema
+
 from src.database.config import DatabaseConfig
+from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
+
 
 class CupAndHandleStrategy(BaseStrategy):
     """

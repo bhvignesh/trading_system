@@ -2,10 +2,11 @@
 
 # TODO: Verify
 
-import pandas as pd
-import numpy as np
 from datetime import timedelta
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

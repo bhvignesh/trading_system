@@ -21,7 +21,7 @@ The strategy class inherits from BaseStrategy so that it conforms to the common 
 """
 
 from datetime import datetime
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd

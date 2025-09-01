@@ -16,10 +16,11 @@ EV/EBITDA ratio) along with a binary signal.
 The input tickers can be a single ticker string or a list of tickers.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, Optional, Union, List
 from datetime import datetime
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import pandas as pd
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 

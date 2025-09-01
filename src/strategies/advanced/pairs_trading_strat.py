@@ -18,16 +18,17 @@ Key features:
     - Integration with a RiskManager to apply practical risk management on generated signals.
 """
 
+import logging
+from itertools import combinations
+from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from statsmodels.stats.diagnostic import breaks_cusumolsb
 from statsmodels.tsa.stattools import adfuller, coint
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-from statsmodels.stats.diagnostic import breaks_cusumolsb
-from itertools import combinations
-from typing import List, Dict, Tuple, Optional, Union, Any
-import logging
-from time import perf_counter
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy

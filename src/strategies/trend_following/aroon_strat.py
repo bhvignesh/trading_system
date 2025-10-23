@@ -7,6 +7,7 @@ from typing import Dict, Optional, Union, List
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
+from numba import njit  # Added for Numba acceleration
 
 class AroonStrategy(BaseStrategy):
     """
@@ -66,6 +67,39 @@ class AroonStrategy(BaseStrategy):
         )
         self.logger = logging.getLogger(self.__class__.__name__)
 
+    @staticmethod
+    @njit
+    def compute_aroon(high: np.ndarray, low: np.ndarray, window: int) -> tuple:
+        """
+        Numba-accelerated function to compute Aroon Up and Aroon Down.
+        
+        Args:
+            high (np.ndarray): Array of high prices.
+            low (np.ndarray): Array of low prices.
+            window (int): Lookback window size.
+            
+        Returns:
+            tuple: (aroon_up array, aroon_down array)
+        """
+        n = len(high)
+        aroon_up = np.full(n, np.nan)
+        aroon_down = np.full(n, np.nan)
+        
+        for i in range(window - 1, n):
+            # Slice the window
+            high_window = high[i - window + 1: i + 1]
+            low_window = low[i - window + 1: i + 1]
+            
+            # Find index of max high and min low (relative to window start)
+            max_idx = np.argmax(high_window)
+            min_idx = np.argmin(low_window)
+            
+            # Aroon calculations
+            aroon_up[i] = ((max_idx + 1) / window) * 100
+            aroon_down[i] = ((min_idx + 1) / window) * 100
+        
+        return aroon_up, aroon_down
+
     def _calculate_aroon(self, high: pd.Series, low: pd.Series) -> pd.DataFrame:
         """
         Compute Aroon Up, Aroon Down, Aroon Oscillator, and normalized signal strength.
@@ -83,12 +117,16 @@ class AroonStrategy(BaseStrategy):
         Returns:
             pd.DataFrame: DataFrame with columns 'aroon_up', 'aroon_down', 'aroon_osc', and 'signal_strength'.
         """
-        # Compute Aroon Up and Aroon Down using a rolling window calculation.
-        # The lambda functions work on the rolling window array.
-        high_window = high.rolling(window=self.lookback, min_periods=self.lookback)
-        low_window = low.rolling(window=self.lookback, min_periods=self.lookback)
-        aroon_up = high_window.apply(lambda x: (np.argmax(x) + 1) / self.lookback * 100, raw=True)
-        aroon_down = low_window.apply(lambda x: (np.argmin(x) + 1) / self.lookback * 100, raw=True)
+        # Convert to NumPy arrays for Numba
+        high_np = high.to_numpy()
+        low_np = low.to_numpy()
+        
+        # Compute Aroon using Numba-accelerated function
+        aroon_up_np, aroon_down_np = self.compute_aroon(high_np, low_np, self.lookback)
+        
+        # Convert back to Series with original index
+        aroon_up = pd.Series(aroon_up_np, index=high.index)
+        aroon_down = pd.Series(aroon_down_np, index=low.index)
 
         # Calculate the oscillator and its normalized strength.
         aroon_osc = aroon_up - aroon_down

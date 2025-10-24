@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, Optional, Union, List
+import numba  # Added for optimization
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
@@ -220,6 +221,65 @@ class ChoppinessIndexStrategy(BaseStrategy):
             # No explicit lookback here; date range defines data scope
         )
 
+    @numba.jit(nopython=True)
+    def _compute_choppiness_index(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
+        """Numba-jitted function to compute Choppiness Index from arrays."""
+        n = len(high)
+        tr = np.full(n, np.nan)
+        sum_tr = np.full(n, np.nan)
+        max_high = np.full(n, np.nan)
+        min_low = np.full(n, np.nan)
+        ci = np.full(n, np.nan)
+
+        # True Range
+        for i in range(1, n):
+            tr1 = high[i] - low[i]
+            tr2 = abs(high[i] - close[i-1])
+            tr3 = abs(low[i] - close[i-1])
+            tr[i] = max(tr1, max(tr2, tr3))
+
+        # Rolling calculations
+        for i in range(period - 1, n):
+            sum_tr[i] = np.sum(tr[i - period + 1:i + 1])
+            max_high[i] = np.max(high[i - period + 1:i + 1])
+            min_low[i] = np.min(low[i - period + 1:i + 1])
+            range_hl = max_high[i] - min_low[i]
+            if range_hl == 0:
+                ci[i] = np.nan
+            else:
+                ci[i] = 100 * np.log10(sum_tr[i] / range_hl) / np.log10(period)
+
+        return ci
+
+    @numba.jit(nopython=True)
+    def _compute_macd(close: np.ndarray, fast: int, slow: int, smooth: int) -> tuple:
+        """Numba-jitted function to compute MACD, signal line, and histogram from close array."""
+        n = len(close)
+        macd = np.full(n, np.nan)
+        signal_line = np.full(n, np.nan)
+        histogram = np.full(n, np.nan)
+
+        # EMA helpers
+        alpha_fast = 2.0 / (fast + 1)
+        alpha_slow = 2.0 / (slow + 1)
+        alpha_smooth = 2.0 / (smooth + 1)
+
+        # Initialize EMAs
+        exp_fast = close[0]
+        exp_slow = close[0]
+        macd[0] = exp_fast - exp_slow
+        signal = macd[0]
+
+        for i in range(1, n):
+            exp_fast = alpha_fast * close[i] + (1 - alpha_fast) * exp_fast
+            exp_slow = alpha_slow * close[i] + (1 - alpha_slow) * exp_slow
+            macd[i] = exp_fast - exp_slow
+            signal = alpha_smooth * macd[i] + (1 - alpha_smooth) * signal
+            signal_line[i] = signal
+            histogram[i] = macd[i] - signal_line[i]
+
+        return macd, signal_line, histogram
+
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculates and appends Choppiness Index (CI) and MACD indicators.
@@ -245,29 +305,19 @@ class ChoppinessIndexStrategy(BaseStrategy):
         def calculate_group_indicators(group_df: pd.DataFrame) -> pd.DataFrame:
             group_df = group_df.sort_index() # Ensure date sorting within group
             
-            # True Range
-            prev_close = group_df['close'].shift(1)
-            tr1 = group_df['high'] - group_df['low']
-            tr2 = abs(group_df['high'] - prev_close)
-            tr3 = abs(group_df['low'] - prev_close)
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-            # Choppiness Index
-            sum_tr = tr.rolling(window=ci_period, min_periods=ci_period).sum()
-            max_high = group_df['high'].rolling(window=ci_period, min_periods=ci_period).max()
-            min_low = group_df['low'].rolling(window=ci_period, min_periods=ci_period).min()
+            # Extract NumPy arrays for Numba
+            high_arr = group_df['high'].values
+            low_arr = group_df['low'].values
+            close_arr = group_df['close'].values
             
-            range_hl = max_high - min_low
-            # Handle range_hl = 0 to prevent division by zero and ensure NaN propagation
-            ci_val = 100 * np.log10(sum_tr / range_hl.replace(0, np.nan)) / np.log10(ci_period)
-            group_df['ci'] = ci_val
-
-            # MACD
-            exp_fast = group_df['close'].ewm(span=fast, adjust=False).mean()
-            exp_slow = group_df['close'].ewm(span=slow, adjust=False).mean()
-            group_df['macd'] = exp_fast - exp_slow
-            group_df['signal_line'] = group_df['macd'].ewm(span=smooth, adjust=False).mean()
-            group_df['histogram'] = group_df['macd'] - group_df['signal_line']
+            # Compute Choppiness Index with Numba
+            group_df['ci'] = self._compute_choppiness_index(high_arr, low_arr, close_arr, ci_period)
+            
+            # Compute MACD with Numba
+            macd, signal_line, histogram = self._compute_macd(close_arr, fast, slow, smooth)
+            group_df['macd'] = macd
+            group_df['signal_line'] = signal_line
+            group_df['histogram'] = histogram
             
             return group_df.dropna(subset=['ci', 'macd', 'signal_line', 'histogram'])
 
@@ -327,9 +377,6 @@ class ChoppinessIndexStrategy(BaseStrategy):
             # and RiskManager potentially exiting based on this.
             # If a bearish condition is met, it effectively means "close long position",
             # which is represented by raw_signal 0 if already long.
-            # If a new bearish signal appears while flat, it's ignored.
-            # The crucial part is how ffill handles this.
-            # To exit a long: a bearish signal (which implies CI < 38.2) should change raw_signal to 0.
             # What if we are flat and bearish happens? raw_signal remains 0. Correct.
             # What if we are long (signal=1) and bearish happens? raw_signal should become 0 to exit.
             df.loc[bearish_condition & (df['raw_signal'].shift(1).fillna(0) == 1), 'raw_signal'] = 0

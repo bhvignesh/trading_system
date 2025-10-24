@@ -1,5 +1,3 @@
-# trading_system/src/stategies/trend_following/donchian_channel_strat.py
-
 """
 Donchian Channel Breakout Strategy with Integrated Risk Management
 
@@ -39,6 +37,7 @@ from typing import Dict, Optional, Union, List
 from src.strategies.base_strat import BaseStrategy
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
+import numba  # Assumed to be available in the environment
 
 
 class DonchianChannelStrategy(BaseStrategy):
@@ -107,8 +106,8 @@ class DonchianChannelStrategy(BaseStrategy):
           3. Optionally calculates the Average True Range (ATR) and applies a filter to allow entry only
              if the channel width is sufficiently wide.
           4. Using a stateful procedure (iterating in a vectorized manner per ticker), determines daily signals:
-             - Long entry (signal = 1) when close > upper entry level and the previous position is ≤ 0.
-             - Short entry (signal = -1) when close < lower entry level and the previous position is ≥ 0.
+             - Long entry (signal = 1) when close > upper entry level and previous position ≤ 0.
+             - Short entry (signal = -1) when close < lower entry level and previous position ≥ 0.
              - Exits are triggered if a long position’s price falls below the lower exit level or a short
                position’s price rises above the upper exit level.
           5. Applies the RiskManager to adjust for stop loss, take profit, slippage, and transaction costs.
@@ -202,18 +201,31 @@ class DonchianChannelStrategy(BaseStrategy):
         entry_lookback = int(self.params['entry_lookback'])
         exit_lookback = int(self.params['exit_lookback'])
 
-        # Calculate rolling entry and exit levels (shifted by 1 period to avoid lookahead bias)
-        upper_entry = price_data['high'].rolling(window=entry_lookback).max().shift(1)
-        lower_entry = price_data['low'].rolling(window=entry_lookback).min().shift(1)
-        upper_exit = price_data['high'].rolling(window=exit_lookback).max().shift(1)
-        lower_exit = price_data['low'].rolling(window=exit_lookback).min().shift(1)
+        # Extract arrays for Numba computations
+        index = price_data.index
+        high_array = price_data['high'].values
+        low_array = price_data['low'].values
+        close_array = price_data['close'].values
+
+        # Calculate rolling entry and exit levels using Numba (replicates rolling.max/min().shift(1))
+        upper_entry_array = self._rolling_max_numba(high_array, entry_lookback)
+        lower_entry_array = self._rolling_min_numba(low_array, entry_lookback)
+        upper_exit_array = self._rolling_max_numba(high_array, exit_lookback)
+        lower_exit_array = self._rolling_min_numba(low_array, exit_lookback)
+
+        # Convert back to Series for consistency
+        upper_entry = pd.Series(upper_entry_array, index=index)
+        lower_entry = pd.Series(lower_entry_array, index=index)
+        upper_exit = pd.Series(upper_exit_array, index=index)
+        lower_exit = pd.Series(lower_exit_array, index=index)
 
         # Compute the middle channel (average of upper and lower entry levels)
         middle = (upper_entry + lower_entry) / 2
 
         # Calculate ATR and set an entry filter if enabled
         if self.params['use_atr_filter']:
-            atr = self._calculate_atr(price_data, period=int(self.params['atr_period']))
+            atr_array = self._calculate_atr_numba(high_array, low_array, close_array, period=int(self.params['atr_period']))
+            atr = pd.Series(atr_array, index=index)
             channel_width = upper_entry - lower_entry
             atr_filter = channel_width > (atr * self.params['atr_threshold'])
         else:
@@ -230,36 +242,17 @@ class DonchianChannelStrategy(BaseStrategy):
         result['position'] = 0
 
         # Convert series to NumPy arrays for fast indexing.
-        close_array = result['close'].values
         upper_entry_array = upper_entry.values
         lower_entry_array = lower_entry.values
         upper_exit_array = upper_exit.values
         lower_exit_array = lower_exit.values
-        atr_filter_array = atr_filter.values
+        atr_filter_array = atr_filter.values.astype(bool)  # Ensure boolean for Numba
 
-        # Prepare arrays to store computed positions and signals.
-        positions = np.empty(len(result), dtype=int)
-        signals = np.zeros(len(result), dtype=int)
-        positions[0] = initial_position
-
-        # Iterate through each row (starting from the second row) to update position and signal.
-        for i in range(1, len(result)):
-            prev_pos = positions[i - 1]
-            if (close_array[i] > upper_entry_array[i] and prev_pos <= 0 and atr_filter_array[i]):
-                positions[i] = 1
-                signals[i] = 1
-            elif (close_array[i] < lower_entry_array[i] and prev_pos >= 0 and atr_filter_array[i]):
-                positions[i] = -1
-                signals[i] = -1
-            elif (prev_pos == 1 and close_array[i] < lower_exit_array[i]):
-                positions[i] = 0
-                signals[i] = 0
-            elif (prev_pos == -1 and close_array[i] > upper_exit_array[i]):
-                positions[i] = 0
-                signals[i] = 0
-            else:
-                positions[i] = prev_pos
-                signals[i] = 0
+        # Compute positions and signals using Numba-accelerated loop
+        positions, signals = self._compute_signals_numba(
+            close_array, upper_entry_array, lower_entry_array,
+            upper_exit_array, lower_exit_array, atr_filter_array, initial_position
+        )
 
         result['position'] = positions
         result['signal'] = signals
@@ -267,6 +260,79 @@ class DonchianChannelStrategy(BaseStrategy):
             result['signal'] = result['signal'].clip(lower=0) 
         # Remove any rows with NaN values (due to rolling window calculations)
         return result.dropna()
+
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _rolling_max_numba(arr: np.ndarray, window: int) -> np.ndarray:
+        """
+        Numba-optimized rolling max, replicating Pandas rolling(window).max().shift(1).
+        For each i, if i >= window, max(arr[i-window : i]), else NaN.
+        """
+        n = len(arr)
+        result = np.full(n, np.nan, dtype=np.float64)
+        for i in range(window, n):
+            max_val = arr[i - window]
+            for j in range(i - window + 1, i):
+                if arr[j] > max_val:
+                    max_val = arr[j]
+            result[i] = max_val
+        return result
+
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _rolling_min_numba(arr: np.ndarray, window: int) -> np.ndarray:
+        """
+        Numba-optimized rolling min, replicating Pandas rolling(window).min().shift(1).
+        For each i, if i >= window, min(arr[i-window : i]), else NaN.
+        """
+        n = len(arr)
+        result = np.full(n, np.nan, dtype=np.float64)
+        for i in range(window, n):
+            min_val = arr[i - window]
+            for j in range(i - window + 1, i):
+                if arr[j] < min_val:
+                    min_val = arr[j]
+            result[i] = min_val
+        return result
+
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _compute_signals_numba(
+        close: np.ndarray,
+        upper_entry: np.ndarray,
+        lower_entry: np.ndarray,
+        upper_exit: np.ndarray,
+        lower_exit: np.ndarray,
+        atr_filter: np.ndarray,
+        initial_position: int
+    ) -> tuple:
+        """
+        Numba-accelerated function to compute positions and signals from arrays.
+        """
+        n = len(close)
+        positions = np.empty(n, dtype=numba.int32)
+        signals = np.zeros(n, dtype=numba.int32)
+        positions[0] = initial_position
+
+        for i in range(1, n):
+            prev_pos = positions[i - 1]
+            if (close[i] > upper_entry[i] and prev_pos <= 0 and atr_filter[i]):
+                positions[i] = 1
+                signals[i] = 1
+            elif (close[i] < lower_entry[i] and prev_pos >= 0 and atr_filter[i]):
+                positions[i] = -1
+                signals[i] = -1
+            elif (prev_pos == 1 and close[i] < lower_exit[i]):
+                positions[i] = 0
+                signals[i] = 0
+            elif (prev_pos == -1 and close[i] > upper_exit[i]):
+                positions[i] = 0
+                signals[i] = 0
+            else:
+                positions[i] = prev_pos
+                signals[i] = 0
+
+        return positions, signals
 
     def _calculate_atr(self, price_data: pd.DataFrame, period: int = 14) -> pd.Series:
         """
@@ -279,12 +345,37 @@ class DonchianChannelStrategy(BaseStrategy):
         Returns:
             pd.Series: ATR values.
         """
-        high = price_data['high']
-        low = price_data['low']
-        prev_close = price_data['close'].shift(1)
-        tr1 = high - low
-        tr2 = (high - prev_close).abs()
-        tr3 = (low - prev_close).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1/period, min_periods=period).mean()
+        high = price_data['high'].values
+        low = price_data['low'].values
+        close = price_data['close'].values
+        atr_array = self._calculate_atr_numba(high, low, close, period)
+        return pd.Series(atr_array, index=price_data.index)
+
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _calculate_atr_numba(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
+        """
+        Numba-optimized ATR calculation using Wilder's method.
+        """
+        n = len(high)
+        tr = np.empty(n, dtype=np.float64)
+        atr = np.full(n, np.nan, dtype=np.float64)
+
+        # Compute True Range (TR)
+        for i in range(n):
+            if i == 0:
+                tr[i] = high[i] - low[i]  # No prev_close for i=0
+            else:
+                tr1 = high[i] - low[i]
+                tr2 = abs(high[i] - close[i-1])
+                tr3 = abs(low[i] - close[i-1])
+                tr[i] = max(tr1, tr2, tr3)
+
+        # Compute ATR using Wilder's EMA (starts after period)
+        alpha = 1.0 / period
+        if n >= period:
+            atr[period-1] = np.mean(tr[:period])  # Initial SMA
+            for i in range(period, n):
+                atr[i] = atr[i-1] * (1 - alpha) + tr[i] * alpha
+
         return atr

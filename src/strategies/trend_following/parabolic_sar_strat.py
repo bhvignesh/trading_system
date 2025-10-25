@@ -6,7 +6,7 @@ from typing import Dict, Optional, Union, List
 from src.strategies.base_strat import BaseStrategy
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
-
+import numba
 
 class ParabolicSARStrategy(BaseStrategy):
     """
@@ -284,12 +284,15 @@ class ParabolicSARStrategy(BaseStrategy):
         return result_with_rm
 
 
-    def _calculate_psar(self,
-                        high: np.ndarray,
-                        low: np.ndarray,
-                        initial_af: float = 0.02,
-                        max_af: float = 0.2,
-                        af_step: float = 0.02) -> tuple[np.ndarray, np.ndarray]:
+    @numba.jit(nopython=True)
+    def _calculate_psar(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        initial_af: float = 0.02,
+        max_af: float = 0.2,
+        af_step: float = 0.02
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculate Parabolic SAR values and trend.
 
@@ -377,6 +380,31 @@ class ParabolicSARStrategy(BaseStrategy):
         
         return sar, trend
 
+    @numba.jit(nopython=True)
+    def _calculate_atr_numba(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
+        """
+        Numba-optimized ATR calculation.
+        """
+        length = len(high)
+        atr = np.full(length, np.nan)
+        true_range = np.full(length, np.nan)
+
+        for i in range(1, length):
+            tr1 = high[i] - low[i]
+            tr2 = abs(high[i] - close[i-1])
+            tr3 = abs(low[i] - close[i-1])
+            true_range[i] = max(tr1, tr2, tr3)
+
+        # Wilder's EMA for ATR
+        alpha = 1.0 / period
+        for i in range(period, length):
+            if i == period:
+                atr[i] = np.mean(true_range[1:i+1])  # Initial SMA
+            else:
+                atr[i] = alpha * true_range[i] + (1 - alpha) * atr[i-1]
+
+        return atr
+
     def _calculate_atr(self, price_data: pd.DataFrame, period: int = 14) -> pd.Series:
         """
         Calculate Average True Range (ATR).
@@ -392,20 +420,10 @@ class ParabolicSARStrategy(BaseStrategy):
             self.logger.error("Missing HLC columns for ATR calculation.")
             return pd.Series(np.nan, index=price_data.index)
             
-        high_s = price_data['high']
-        low_s = price_data['low']
-        close_s = price_data['close']
+        high = price_data['high'].values
+        low = price_data['low'].values
+        close = price_data['close'].values
         
-        prev_close = close_s.shift(1)
+        atr_values = self._calculate_atr_numba(high, low, close, period)
         
-        tr1 = high_s - low_s
-        tr2 = (high_s - prev_close).abs()
-        tr3 = (low_s - prev_close).abs()
-        
-        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1, skipna=False)
-        
-        # Using Wilder's smoothing for ATR (alpha = 1/period)
-        # min_periods=period ensures that we only get ATR values after enough data
-        atr = true_range.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        
-        return atr
+        return pd.Series(atr_values, index=price_data.index)

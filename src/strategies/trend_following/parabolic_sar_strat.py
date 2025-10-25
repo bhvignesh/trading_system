@@ -284,9 +284,9 @@ class ParabolicSARStrategy(BaseStrategy):
         return result_with_rm
 
 
+    @staticmethod
     @numba.jit(nopython=True)
     def _calculate_psar(
-        self,
         high: np.ndarray,
         low: np.ndarray,
         initial_af: float = 0.02,
@@ -308,7 +308,7 @@ class ParabolicSARStrategy(BaseStrategy):
         """
         length = len(high)
         if length == 0:
-            return np.array([]), np.array([])
+            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
         
         sar = np.zeros(length)
         trend = np.zeros(length)  # 1 for uptrend, -1 for downtrend
@@ -380,6 +380,7 @@ class ParabolicSARStrategy(BaseStrategy):
         
         return sar, trend
 
+    @staticmethod
     @numba.jit(nopython=True)
     def _calculate_atr_numba(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
         """

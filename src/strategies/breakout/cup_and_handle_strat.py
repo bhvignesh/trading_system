@@ -327,6 +327,8 @@ class CupAndHandleStrategy(BaseStrategy):
         """
         max_indices = extrema_data['max_indices']
         min_indices = extrema_data['min_indices']
+        highs = extrema_data.get('highs')
+        lows = extrema_data.get('lows')
         
         if len(max_indices) < 2 or len(min_indices) < 1:
             return []
@@ -335,38 +337,53 @@ class CupAndHandleStrategy(BaseStrategy):
         min_cup_dur = int(self.params['min_cup_duration'])
         max_cup_dur = int(self.params['max_cup_duration'])
         
-        # Vectorized cup validation
-        for i in range(len(max_indices) - 1):
-            left_peak_idx = max_indices[i]
+        max_indices_len = len(max_indices)
+        for i in range(max_indices_len - 1):
+            left_peak_idx = int(max_indices[i])
             
-            for j in range(i + 1, len(max_indices)):
-                right_peak_idx = max_indices[j]
+            for j in range(i + 1, max_indices_len):
+                right_peak_idx = int(max_indices[j])
                 duration = right_peak_idx - left_peak_idx
-                
-                if not (min_cup_dur <= duration <= max_cup_dur):
+
+                if duration > max_cup_dur:
+                    break  # Later peaks will only increase duration
+                if duration < min_cup_dur:
                     continue
                 
                 # Find trough between peaks
                 relevant_mins = min_indices[
                     (min_indices > left_peak_idx) & (min_indices < right_peak_idx)]
                 
-                if len(relevant_mins) == 0:
-                    # Find lowest point manually if no flagged minima
-                    search_slice = data.iloc[left_peak_idx+1:right_peak_idx]
-                    if search_slice.empty:
+                if len(relevant_mins) > 0:
+                    candidate_lows = lows[relevant_mins]
+                    if candidate_lows.size == 0:
                         continue
-                    bottom_idx = search_slice['low'].idxmin()
-                    bottom_loc = data.index.get_loc(bottom_idx)
+                    try:
+                        bottom_loc = int(relevant_mins[int(np.nanargmin(candidate_lows))])
+                    except ValueError:
+                        continue  # All values were NaN
                 else:
-                    bottom_loc = relevant_mins[np.argmin(data.iloc[relevant_mins]['low'])]
+                    low_segment = lows[left_peak_idx + 1:right_peak_idx]
+                    if low_segment.size == 0 or np.all(np.isnan(low_segment)):
+                        continue
+                    try:
+                        bottom_offset = int(np.nanargmin(low_segment))
+                    except ValueError:
+                        continue
+                    bottom_loc = left_peak_idx + 1 + bottom_offset
                 
-                # Validate cup pattern
-                if self._validate_cup_pattern(data, left_peak_idx, bottom_loc, 
-                                            right_peak_idx):
-                    left_price = data.iloc[left_peak_idx]['high']
-                    right_price = data.iloc[right_peak_idx]['high']
+                if self._validate_cup_pattern(
+                    data,
+                    left_peak_idx,
+                    bottom_loc,
+                    right_peak_idx,
+                    highs=highs,
+                    lows=lows
+                ):
+                    left_price = highs[left_peak_idx]
+                    right_price = highs[right_peak_idx]
                     resistance = max(left_price, right_price)
-                    bottom_price = data.iloc[bottom_loc]['low']
+                    bottom_price = lows[bottom_loc]
                     depth = resistance - bottom_price
                     
                     valid_patterns.append((left_peak_idx, right_peak_idx, 
@@ -375,7 +392,9 @@ class CupAndHandleStrategy(BaseStrategy):
         return valid_patterns
 
     def _validate_cup_pattern(self, data: pd.DataFrame, left_idx: int, 
-                             bottom_idx: int, right_idx: int) -> bool:
+                             bottom_idx: int, right_idx: int,
+                             highs: Optional[np.ndarray] = None,
+                             lows: Optional[np.ndarray] = None) -> bool:
         """
         Validate cup pattern criteria using vectorized operations.
         
@@ -384,29 +403,42 @@ class CupAndHandleStrategy(BaseStrategy):
             left_idx (int): Left peak index
             bottom_idx (int): Bottom index  
             right_idx (int): Right peak index
+            highs (Optional[np.ndarray]): Pre-computed highs array
+            lows (Optional[np.ndarray]): Pre-computed lows array
             
         Returns:
             bool: True if pattern is valid
         """
-        left_price = data.iloc[left_idx]['high']
-        right_price = data.iloc[right_idx]['high']
-        bottom_price = data.iloc[bottom_idx]['low']
+        if highs is None or lows is None:
+            highs = data['high'].to_numpy()
+            lows = data['low'].to_numpy()
+
+        if (
+            left_idx < 0 or right_idx >= len(highs) or bottom_idx < 0 or
+            bottom_idx >= len(lows) or bottom_idx <= left_idx or bottom_idx >= right_idx
+        ):
+            return False
+
+        left_price = highs[left_idx]
+        right_price = highs[right_idx]
+        bottom_price = lows[bottom_idx]
+
+        if not (np.isfinite(left_price) and np.isfinite(right_price) and np.isfinite(bottom_price)):
+            return False
         
         resistance = max(left_price, right_price)
         
         if resistance <= 0:
             return False
         
-        # Peak similarity check
-        if abs(left_price - right_price) / resistance > self.params['peak_similarity_threshold']:
+        peak_similarity = self.params['peak_similarity_threshold']
+        if abs(left_price - right_price) / resistance > peak_similarity:
             return False
         
-        # Depth check
         depth = resistance - bottom_price
         if depth / resistance > self.params['cup_depth_threshold']:
             return False
         
-        # Position check (bottom should be in middle portion)
         duration = right_idx - left_idx
         if not (left_idx + duration * 0.2 < bottom_idx < left_idx + duration * 0.8):
             return False
@@ -427,86 +459,122 @@ class CupAndHandleStrategy(BaseStrategy):
         
         min_handle_dur = int(self.params['min_handle_duration'])
         max_handle_dur = int(self.params['max_handle_duration'])
+        breakout_threshold = self.params['breakout_threshold']
+        volume_confirm = self.params['volume_confirm']
+
+        highs = data['high'].to_numpy(copy=False)
+        lows = data['low'].to_numpy(copy=False)
+        close_values = data['close'].to_numpy(copy=False)
+        volume_values = data['volume'].to_numpy(copy=False)
+        avg_volume_values = data['avg_volume'].to_numpy(copy=False)
+
+        cols = data.columns
+        signal_col = cols.get_loc('signal')
+        pattern_res_col = cols.get_loc('pattern_resistance')
+        cup_depth_col = cols.get_loc('cup_depth')
+        signal_strength_col = cols.get_loc('signal_strength')
         
         # Sort patterns by quality (resistance level)
         patterns.sort(key=lambda x: x[2], reverse=True)
         
-        breakout_cooldown = {}  # Track recent breakouts per pattern
+        breakout_cooldown: Dict[Tuple[int, int], int] = {}
+        len_data = len(data)
         
         for left_idx, right_idx, resistance, depth, bottom_idx in patterns:
-            # Check for handle formation and breakouts
             handle_start = right_idx
-            max_search_end = min(len(data), handle_start + max_handle_dur)
+            if handle_start + min_handle_dur >= len_data:
+                continue
+
+            max_search_end = min(len_data, handle_start + max_handle_dur)
+            pattern_key = (left_idx, right_idx)
             
             for current_idx in range(handle_start + min_handle_dur, max_search_end):
-                # Check if we've already signaled recently for this pattern
-                pattern_key = (left_idx, right_idx)
-                if pattern_key in breakout_cooldown and current_idx <= breakout_cooldown[pattern_key]:
+                cooldown_until = breakout_cooldown.get(pattern_key)
+                if cooldown_until is not None and current_idx <= cooldown_until:
                     continue
-                
-                # Validate handle formation
-                handle_slice = data.iloc[handle_start:current_idx]
-                if not self._validate_handle_formation(handle_slice, resistance, depth):
-                    continue
-                
-                # Check breakout condition
-                current_close = data.iloc[current_idx]['close']
-                breakout_level = resistance * (1 + self.params['breakout_threshold'])
-                
-                if current_close > breakout_level:
-                    # Volume confirmation if required
-                    if self.params['volume_confirm']:
-                        current_volume = data.iloc[current_idx]['volume']
-                        avg_volume = data.iloc[current_idx]['avg_volume']
-                        if pd.notna(avg_volume) and avg_volume > 0:
-                            if current_volume <= avg_volume:
-                                continue
-                        else:
-                            continue
-                    
-                    # Valid breakout - assign signal
-                    data.iloc[current_idx, data.columns.get_loc('signal')] = 1
-                    data.iloc[current_idx, data.columns.get_loc('pattern_resistance')] = resistance
-                    data.iloc[current_idx, data.columns.get_loc('cup_depth')] = depth
-                    
-                    # Calculate signal strength
-                    if resistance > 0:
-                        strength = (current_close / resistance) - 1
-                        data.iloc[current_idx, data.columns.get_loc('signal_strength')] = strength
-                    
-                    # Set cooldown to prevent immediate re-entry
-                    breakout_cooldown[pattern_key] = current_idx + min_handle_dur
-                    break
 
-    def _validate_handle_formation(self, handle_data: pd.DataFrame, 
-                                  resistance: float, cup_depth: float) -> bool:
+                if not self._validate_handle_formation(
+                    None,
+                    resistance,
+                    depth,
+                    highs=highs,
+                    lows=lows,
+                    handle_start_idx=handle_start,
+                    handle_end_idx=current_idx
+                ):
+                    continue
+                
+                current_close = close_values[current_idx]
+                breakout_level = resistance * (1 + breakout_threshold)
+                
+                if current_close <= breakout_level:
+                    continue
+
+                if volume_confirm:
+                    avg_volume = avg_volume_values[current_idx]
+                    current_volume = volume_values[current_idx]
+                    if not (np.isfinite(avg_volume) and avg_volume > 0):
+                        continue
+                    if not (np.isfinite(current_volume) and current_volume > avg_volume):
+                        continue
+                
+                data.iat[current_idx, signal_col] = 1
+                data.iat[current_idx, pattern_res_col] = resistance
+                data.iat[current_idx, cup_depth_col] = depth
+                
+                if resistance > 0:
+                    data.iat[current_idx, signal_strength_col] = (current_close / resistance) - 1
+                
+                breakout_cooldown[pattern_key] = current_idx + min_handle_dur
+                break
+
+    def _validate_handle_formation(self, handle_data: Optional[pd.DataFrame], 
+                                  resistance: float, cup_depth: float,
+                                  *, highs: Optional[np.ndarray] = None,
+                                  lows: Optional[np.ndarray] = None,
+                                  handle_start_idx: Optional[int] = None,
+                                  handle_end_idx: Optional[int] = None) -> bool:
         """
         Validate handle formation criteria.
-        
+
         Args:
-            handle_data (pd.DataFrame): Handle period data
+            handle_data (Optional[pd.DataFrame]): Handle period data (fallback path)
             resistance (float): Cup resistance level
             cup_depth (float): Cup depth
+            highs (Optional[np.ndarray]): Pre-computed highs array for fast path
+            lows (Optional[np.ndarray]): Pre-computed lows array for fast path
+            handle_start_idx (Optional[int]): Start index of handle (inclusive)
+            handle_end_idx (Optional[int]): End index of handle (exclusive)
             
         Returns:
             bool: True if handle is valid
         """
-        if handle_data.empty or len(handle_data) < int(self.params['min_handle_duration']):
+        min_handle_duration = int(self.params['min_handle_duration'])
+
+        if highs is not None and lows is not None and handle_start_idx is not None and handle_end_idx is not None:
+            if handle_end_idx - handle_start_idx < min_handle_duration:
+                return False
+            segment = lows[handle_start_idx:handle_end_idx]
+            if segment.size == 0 or np.all(~np.isfinite(segment)):
+                return False
+            handle_high = highs[handle_start_idx]
+            handle_low = np.nanmin(segment)
+        else:
+            if handle_data is None or handle_data.empty or len(handle_data) < min_handle_duration:
+                return False
+            handle_high = handle_data.iloc[0]['high']
+            handle_low = handle_data['low'].min()
+
+        if not (np.isfinite(handle_high) and np.isfinite(handle_low)):
             return False
-        
-        # Handle depth validation
-        handle_high = handle_data.iloc[0]['high']  # Handle start reference
-        handle_low = handle_data['low'].min()
-        handle_depth = handle_high - handle_low
         
         if cup_depth <= 0:
             return False
         
-        # Handle depth relative to cup depth
+        handle_depth = handle_high - handle_low
         if handle_depth / cup_depth > self.params['handle_depth_threshold']:
             return False
         
-        # Handle low shouldn't break cup support significantly
         if handle_low < resistance - cup_depth * 0.6:
             return False
         

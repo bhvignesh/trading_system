@@ -46,7 +46,6 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, Optional, Union
-import numba
 
 # Initialize module logger
 logger = logging.getLogger(__name__)
@@ -187,10 +186,10 @@ class RiskManager:
             df['trailing_stop_level'] = np.nan
             if long_mask.any(): # Avoid groupby if no long positions exist
                 # NO Groupby needed here as we are processing a single ticker's data
-                df['cummax_high'] = self._cummax_numba(df.loc[long_mask, 'high'].values)
+                df['cummax_high'] = df.loc[long_mask,'high'].cummax() # Use high directly
                 df.loc[long_mask, 'trailing_stop_level'] = df['cummax_high'] * (1 - self.trailing_stop_pct)
             if short_mask.any(): # Avoid groupby if no short positions exist
-                 df['cummin_low'] = self._cummin_numba(df.loc[short_mask, 'low'].values)
+                 df['cummin_low'] = df.loc[short_mask,'low'].cummin() # Use low directly
                  df.loc[short_mask, 'trailing_stop_level'] = df['cummin_low'] * (1 + self.trailing_stop_pct)
             trailing_stop_exit = (
                 (long_mask & (df['low'] <= df['trailing_stop_level'])) |
@@ -441,29 +440,3 @@ class RiskManager:
             result_df = self._apply_logic_single_ticker(signals_df.copy(), single_ticker_initial_pos)
 
         return result_df
-
-    @numba.jit(nopython=True)
-    def _cummax_numba(self, arr: np.ndarray) -> np.ndarray:
-        """
-        Numba-optimized cumulative maximum.
-        """
-        result = np.empty_like(arr)
-        max_val = arr[0]
-        for i in range(len(arr)):
-            if arr[i] > max_val:
-                max_val = arr[i]
-            result[i] = max_val
-        return result
-
-    @numba.jit(nopython=True)
-    def _cummin_numba(self, arr: np.ndarray) -> np.ndarray:
-        """
-        Numba-optimized cumulative minimum.
-        """
-        result = np.empty_like(arr)
-        min_val = arr[0]
-        for i in range(len(arr)):
-            if arr[i] < min_val:
-                min_val = arr[i]
-            result[i] = min_val
-        return result

@@ -4,62 +4,57 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, Optional, Union, List
+from numba import njit
+
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
 
-try:
-    from numba import njit
-    NUMBA_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional dependency
-    NUMBA_AVAILABLE = False
 
+@njit(cache=True)
+def _compute_aroon_numba(high_values: np.ndarray, low_values: np.ndarray, lookback: int):
+    """
+    Numba-accelerated core for Aroon Up/Down calculations.
+    """
+    n = high_values.shape[0]
+    aroon_up = np.full(n, np.nan, dtype=np.float64)
+    aroon_down = np.full(n, np.nan, dtype=np.float64)
 
-if NUMBA_AVAILABLE:
+    for i in range(lookback - 1, n):
+        start = i - lookback + 1
 
-    @njit(cache=True)
-    def _compute_aroon_numba(high_values: np.ndarray, low_values: np.ndarray, lookback: int):
-        n = high_values.shape[0]
-        aroon_up = np.full(n, np.nan, dtype=np.float64)
-        aroon_down = np.full(n, np.nan, dtype=np.float64)
+        max_val = high_values[start]
+        min_val = low_values[start]
+        if np.isnan(max_val) or np.isnan(min_val):
+            continue
 
-        for i in range(lookback - 1, n):
-            start = i - lookback + 1
+        max_idx = 0
+        min_idx = 0
+        has_nan = False
 
-            max_val = high_values[start]
-            min_val = low_values[start]
-            if np.isnan(max_val) or np.isnan(min_val):
-                continue
+        for j in range(1, lookback):
+            h = high_values[start + j]
+            l = low_values[start + j]
 
-            max_idx = 0
-            min_idx = 0
-            has_nan = False
+            if np.isnan(h) or np.isnan(l):
+                has_nan = True
+                break
 
-            for j in range(1, lookback):
-                h = high_values[start + j]
-                l = low_values[start + j]
+            if h > max_val:
+                max_val = h
+                max_idx = j
 
-                if np.isnan(h) or np.isnan(l):
-                    has_nan = True
-                    break
+            if l < min_val:
+                min_val = l
+                min_idx = j
 
-                if h > max_val:
-                    max_val = h
-                    max_idx = j
+        if has_nan:
+            continue
 
-                if l < min_val:
-                    min_val = l
-                    min_idx = j
+        aroon_up[i] = (max_idx + 1) / lookback * 100.0
+        aroon_down[i] = (min_idx + 1) / lookback * 100.0
 
-            if has_nan:
-                continue
-
-            aroon_up[i] = (max_idx + 1) / lookback * 100.0
-            aroon_down[i] = (min_idx + 1) / lookback * 100.0
-
-        return aroon_up, aroon_down
-else:  # pragma: no cover - numba fallback stub
-    _compute_aroon_numba = None  # type: ignore
+    return aroon_up, aroon_down
 
 
 class AroonStrategy(BaseStrategy):
@@ -138,29 +133,19 @@ class AroonStrategy(BaseStrategy):
             pd.DataFrame: DataFrame with columns 'aroon_up', 'aroon_down', 'aroon_osc', and 'signal_strength'.
         """
         lookback = self.lookback
-        use_numba = (
-            NUMBA_AVAILABLE
-            and lookback > 0
-            and len(high) >= lookback
-            and len(low) >= lookback
-        )
 
-        if use_numba:
-            try:
-                high_values = high.to_numpy(dtype=np.float64, copy=False)
-                low_values = low.to_numpy(dtype=np.float64, copy=False)
-                aroon_up_arr, aroon_down_arr = _compute_aroon_numba(high_values, low_values, lookback)
+        try:
+            high_values = high.to_numpy(dtype=np.float64, copy=False)
+            low_values = low.to_numpy(dtype=np.float64, copy=False)
+            aroon_up_arr, aroon_down_arr = _compute_aroon_numba(high_values, low_values, lookback)
 
-                aroon_up = pd.Series(aroon_up_arr, index=high.index, dtype=np.float64)
-                aroon_down = pd.Series(aroon_down_arr, index=high.index, dtype=np.float64)
-            except Exception as exc:  # Fallback to pandas if Numba path fails
-                self.logger.debug(
-                    "Falling back to pandas rolling apply for Aroon calculation due to error: %s",
-                    exc
-                )
-                use_numba = False
-
-        if not use_numba:
+            aroon_up = pd.Series(aroon_up_arr, index=high.index, dtype=np.float64)
+            aroon_down = pd.Series(aroon_down_arr, index=high.index, dtype=np.float64)
+        except Exception as exc:
+            self.logger.debug(
+                "Numba Aroon kernel failed (%s). Falling back to pandas rolling apply.",
+                exc
+            )
             high_window = high.rolling(window=lookback, min_periods=lookback)
             low_window = low.rolling(window=lookback, min_periods=lookback)
 

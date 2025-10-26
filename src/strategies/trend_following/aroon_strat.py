@@ -7,7 +7,60 @@ from typing import Dict, Optional, Union, List
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
-from numba import njit  # Added for Numba acceleration
+
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    NUMBA_AVAILABLE = False
+
+
+if NUMBA_AVAILABLE:
+
+    @njit(cache=True)
+    def _compute_aroon_numba(high_values: np.ndarray, low_values: np.ndarray, lookback: int):
+        n = high_values.shape[0]
+        aroon_up = np.full(n, np.nan, dtype=np.float64)
+        aroon_down = np.full(n, np.nan, dtype=np.float64)
+
+        for i in range(lookback - 1, n):
+            start = i - lookback + 1
+
+            max_val = high_values[start]
+            min_val = low_values[start]
+            if np.isnan(max_val) or np.isnan(min_val):
+                continue
+
+            max_idx = 0
+            min_idx = 0
+            has_nan = False
+
+            for j in range(1, lookback):
+                h = high_values[start + j]
+                l = low_values[start + j]
+
+                if np.isnan(h) or np.isnan(l):
+                    has_nan = True
+                    break
+
+                if h > max_val:
+                    max_val = h
+                    max_idx = j
+
+                if l < min_val:
+                    min_val = l
+                    min_idx = j
+
+            if has_nan:
+                continue
+
+            aroon_up[i] = (max_idx + 1) / lookback * 100.0
+            aroon_down[i] = (min_idx + 1) / lookback * 100.0
+
+        return aroon_up, aroon_down
+else:  # pragma: no cover - numba fallback stub
+    _compute_aroon_numba = None  # type: ignore
+
 
 class AroonStrategy(BaseStrategy):
     """
@@ -67,76 +120,59 @@ class AroonStrategy(BaseStrategy):
         )
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    @staticmethod
-    @njit
-    def compute_aroon(high: np.ndarray, low: np.ndarray, window: int) -> tuple:
-        """
-        Numba-accelerated function to compute Aroon Up and Aroon Down.
-        
-        Args:
-            high (np.ndarray): Array of high prices.
-            low (np.ndarray): Array of low prices.
-            window (int): Lookback window size.
-            
-        Returns:
-            tuple: (aroon_up array, aroon_down array)
-        """
-        n = len(high)
-        aroon_up = np.full(n, np.nan)
-        aroon_down = np.full(n, np.nan)
-        
-        for i in range(window - 1, n):
-            # Slice the window
-            high_window = high[i - window + 1: i + 1]
-            low_window = low[i - window + 1: i + 1]
-            
-            # Find index of max high and min low (relative to window start)
-            max_idx = np.argmax(high_window)
-            min_idx = np.argmin(low_window)
-            
-            # Aroon calculations
-            aroon_up[i] = ((max_idx + 1) / window) * 100
-            aroon_down[i] = ((min_idx + 1) / window) * 100
-        
-        return aroon_up, aroon_down
-
     def _calculate_aroon(self, high: pd.Series, low: pd.Series) -> pd.DataFrame:
         """
         Compute Aroon Up, Aroon Down, Aroon Oscillator, and normalized signal strength.
-        
+
         Mathematically:
           - Aroon Up   = ((np.argmax(high over lookback window) + 1) / lookback) * 100
           - Aroon Down = ((np.argmin(low over lookback window) + 1) / lookback) * 100
           - Aroon Oscillator = Aroon Up - Aroon Down
           - signal_strength = |Aroon Oscillator| / (rolling_std(Aroon Oscillator) + 1e-6)
-          
+
         Args:
             high (pd.Series): High prices.
             low (pd.Series): Low prices.
-            
+
         Returns:
             pd.DataFrame: DataFrame with columns 'aroon_up', 'aroon_down', 'aroon_osc', and 'signal_strength'.
         """
-        # Convert to NumPy arrays for Numba
-        high_np = high.to_numpy()
-        low_np = low.to_numpy()
-        
-        # Compute Aroon using Numba-accelerated function
-        aroon_up_np, aroon_down_np = self.compute_aroon(high_np, low_np, self.lookback)
-        
-        # Convert back to Series with original index
-        aroon_up = pd.Series(aroon_up_np, index=high.index)
-        aroon_down = pd.Series(aroon_down_np, index=low.index)
+        lookback = self.lookback
+        use_numba = (
+            NUMBA_AVAILABLE
+            and lookback > 0
+            and len(high) >= lookback
+            and len(low) >= lookback
+        )
 
-        # Calculate the oscillator and its normalized strength.
+        if use_numba:
+            try:
+                high_values = high.to_numpy(dtype=np.float64, copy=False)
+                low_values = low.to_numpy(dtype=np.float64, copy=False)
+                aroon_up_arr, aroon_down_arr = _compute_aroon_numba(high_values, low_values, lookback)
+
+                aroon_up = pd.Series(aroon_up_arr, index=high.index, dtype=np.float64)
+                aroon_down = pd.Series(aroon_down_arr, index=high.index, dtype=np.float64)
+            except Exception as exc:  # Fallback to pandas if Numba path fails
+                self.logger.debug(
+                    "Falling back to pandas rolling apply for Aroon calculation due to error: %s",
+                    exc
+                )
+                use_numba = False
+
+        if not use_numba:
+            high_window = high.rolling(window=lookback, min_periods=lookback)
+            low_window = low.rolling(window=lookback, min_periods=lookback)
+
+            aroon_up = high_window.apply(lambda x: (np.argmax(x) + 1) / lookback * 100, raw=True)
+            aroon_down = low_window.apply(lambda x: (np.argmin(x) + 1) / lookback * 100, raw=True)
+
         aroon_osc = aroon_up - aroon_down
-        # Compute rolling standard deviation over the same window.
-        osc_std = aroon_osc.rolling(window=self.lookback, min_periods=self.lookback).std()
+        osc_std = aroon_osc.rolling(window=lookback, min_periods=lookback).std()
         signal_strength = (aroon_osc.abs() / (osc_std + 1e-6)).fillna(0)
 
-        # Apply smoothing if specified
         signal_smoothing = int(self.params.get('signal_smoothing', 1))
-        
+
         if signal_smoothing > 1:
             aroon_up = aroon_up.rolling(window=signal_smoothing).mean()
             aroon_down = aroon_down.rolling(window=signal_smoothing).mean()
@@ -161,7 +197,7 @@ class AroonStrategy(BaseStrategy):
 
         Args:
             df (pd.DataFrame): DataFrame including at least 'aroon_up' and 'aroon_down'.
-            
+
         Returns:
             pd.Series: Integer signals (1 for long, -1 for short, 0 for flat).
         """
@@ -173,7 +209,6 @@ class AroonStrategy(BaseStrategy):
             raw_signals = np.where(short_cond, -1, raw_signals)
         else:
             raw_signals = np.where(short_cond, 0, raw_signals)
-        # Forward fill previous nonzero signals.
         signals = pd.Series(raw_signals, index=df.index).replace(0, np.nan).ffill().fillna(0)
         return signals.astype(int)
 
@@ -186,37 +221,30 @@ class AroonStrategy(BaseStrategy):
             df (pd.DataFrame): Price data with at least 'open', 'high', 'low', 'close'.
             initial_position (int): Starting position.
             latest_only (bool): Whether to return only the most recent signal.
-            
+
         Returns:
             pd.DataFrame: Processed DataFrame with computed indicators, signals, risk-managed returns,
                           and additional columns for backtesting.
         """
-        # Validate that sufficient records exist.
         min_records = self.lookback if latest_only else 2 * self.lookback
         if not self._validate_data(df, min_records=min_records):
             return pd.DataFrame()
 
-        # Compute the Aroon indicators.
         aroon_df = self._calculate_aroon(df['high'], df['low'])
         df = df.join(aroon_df)
 
-        # Generate raw trading signals and assign to the DataFrame.
         df['signal'] = self._generate_raw_signals(df)
 
         if not latest_only:
-            # Apply the Risk Manager to get risk-managed positions, returns, and exit types.
             df = self.risk_manager.apply(df, initial_position=initial_position)
-            # Calculate daily returns and derive strategy returns.
             df['daily_return'] = df['close'].pct_change(fill_method=None).fillna(0)
             df['strategy_return'] = df['position'].shift(1) * df['daily_return']
-            # Rename risk management specific columns for downstream consistency.
             df.rename(columns={
                 'return': 'rm_strategy_return',
                 'cumulative_return': 'rm_cumulative_return',
                 'exit_type': 'rm_action'
             }, inplace=True)
         else:
-            # When forecasting for the latest signal, restrict columns.
             df = df[['open', 'high', 'low', 'close', 'aroon_up', 'aroon_down', 'aroon_osc', 'signal_strength', 'signal']].iloc[[-1]]
         return df
 
@@ -231,39 +259,17 @@ class AroonStrategy(BaseStrategy):
         """
         Retrieve historical data and generate trading signals with integrated risk management.
 
-        For each ticker, the method:
-          1. Retrieves historical price data (from a specified date range for backtesting or a minimal
-             lookback slice for real-time forecasting).
-          2. Computes the Aroon indicators (Aroon Up, Aroon Down, Aroon Oscillator, and signal strength).
-          3. Generates raw trading signals:
-             - Long (1) when Aroon Up ≥ 70 and Aroon Down ≤ 30.
-             - Short (-1) when Aroon Up ≤ 30 and Aroon Down ≥ 70 (if not long_only).
-             The signals are forward filled until a reversal.
-          4. When in backtest mode (latest_only is False), applies risk management to adjust the entry/exit
-             prices by incorporating slippage, transaction costs, stop loss and take profit thresholds.
-             Risk-managed columns such as 'rm_strategy_return', 'rm_cumulative_return', and 'rm_action'
-             are produced. Daily returns and strategy returns (using prior-day positions) are also computed.
-          5. For real-time signals (latest_only is True), returns only the last row with essential columns.
-
         Args:
             ticker (str or List[str]): Stock ticker symbol or list of tickers.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
             initial_position (int): Starting trading position (default: 0).
             latest_only (bool): If True, returns only the final row of each ticker for forecasting.
-            
+
         Returns:
-            pd.DataFrame: Consolidated DataFrame containing for each ticker:
-                - 'open', 'high', 'low', 'close'  : Price references.
-                - 'aroon_up', 'aroon_down', 'aroon_osc', 'signal_strength'
-                - 'signal'                        : Raw trading signal.
-                - (For backtests) 'daily_return', 'strategy_return',
-                  'position', 'rm_strategy_return', 'rm_cumulative_return', 'rm_action'
-                When latest_only is True, only a minimal set of columns is returned.
+            pd.DataFrame: Consolidated DataFrame containing computed indicators and risk-managed outputs.
         """
-        # Process multiple tickers (vectorized group-by) or a single ticker.
         if isinstance(ticker, list):
-            # For multiple tickers, retrieve data using the base class method.
             if latest_only:
                 df = self.get_historical_prices(ticker, lookback=self.lookback)
             else:
@@ -271,7 +277,6 @@ class AroonStrategy(BaseStrategy):
             if df.empty:
                 return df
 
-            # Process each ticker's data group separately.
             def process_group(group: pd.DataFrame) -> pd.DataFrame:
                 return self._process_single_ticker(group, initial_position, latest_only)
 
@@ -280,7 +285,6 @@ class AroonStrategy(BaseStrategy):
             return df_processed
 
         else:
-            # Single ticker processing.
             if latest_only:
                 df = self.get_historical_prices(ticker, lookback=self.lookback)
             else:
@@ -290,11 +294,11 @@ class AroonStrategy(BaseStrategy):
     def _validate_data(self, df: pd.DataFrame, min_records: int = 1) -> bool:
         """
         Validate that the provided historical price data has at least the required number of records.
-        
+
         Args:
             df (pd.DataFrame): DataFrame with historical prices.
             min_records (int): Minimum number of records required.
-            
+
         Returns:
             bool: True if the data is sufficient for processing; otherwise, False.
         """

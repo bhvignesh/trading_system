@@ -16,9 +16,16 @@ Filter out false signals that might occur due to gaps
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
-from scipy.stats import beta, kstest, norm
+from typing import Dict, Optional, Union, List, Tuple
+from scipy.stats import beta, kstest, norm, ksone
 import warnings
+
+try:
+    from numpy.lib.stride_tricks import sliding_window_view
+    _HAS_SLIDING_WINDOW = True
+except ImportError:
+    sliding_window_view = None
+    _HAS_SLIDING_WINDOW = False
 
 from src.strategies.base_strat import BaseStrategy
 from src.database.config import DatabaseConfig
@@ -149,17 +156,14 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             pd.DataFrame: DataFrame containing signals and performance metrics.
         """
         try:
-            # Define lookback buffer to ensure we have enough data for the window
             lookback_buffer = 2 * self.window
             
-            # Retrieve historical price data
             if start_date and end_date:
                 data = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date, lookback=lookback_buffer)
             else:
                 data = self.get_historical_prices(ticker, lookback=lookback_buffer)
                 data = data.sort_index()
             
-            # Process multiple tickers if provided
             if isinstance(ticker, list):
                 signals_list = []
                 for t, group in data.groupby(level=0):
@@ -167,24 +171,18 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
                         self.logger.warning(f"Insufficient data for {t}: required at least {self.window} records.")
                         continue
                     
-                    # Calculate signals for a single ticker
                     sig = self._calculate_signals_single(group)
-                    
-                    # Apply risk management
                     sig = self.risk_manager.apply(sig, initial_position)
                     
-                    # Calculate performance metrics
                     sig['daily_return'] = sig['close'].pct_change().fillna(0)
                     sig['strategy_return'] = sig['daily_return'] * sig['position'].shift(1).fillna(0)
                     
-                    # Rename risk-managed return columns for clarity
                     sig.rename(columns={
                         'return': 'rm_strategy_return',
                         'cumulative_return': 'rm_cumulative_return',
                         'exit_type': 'rm_action'
                     }, inplace=True)
                     
-                    # Add ticker column
                     sig['ticker'] = t
                     signals_list.append(sig)
                 
@@ -193,33 +191,25 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
                     
                 signals = pd.concat(signals_list)
                 
-                # If latest_only is True, take only the last row per ticker
                 if latest_only:
                     signals = signals.groupby('ticker').tail(1)
             else:
-                # Process single ticker
                 if not self._validate_data(data, min_records=self.window):
                     self.logger.warning(f"Insufficient data for {ticker}: required at least {self.window} records.")
                     return pd.DataFrame()
                 
-                # Calculate signals for the single ticker
                 signals = self._calculate_signals_single(data)
-                
-                # Apply risk management
                 signals = self.risk_manager.apply(signals, initial_position)
                 
-                # Calculate performance metrics
                 signals['daily_return'] = signals['close'].pct_change().fillna(0)
                 signals['strategy_return'] = signals['daily_return'] * signals['position'].shift(1).fillna(0)
                 
-                # Rename risk-managed return columns
                 signals.rename(columns={
                     'return': 'rm_strategy_return',
                     'cumulative_return': 'rm_cumulative_return',
                     'exit_type': 'rm_action'
                 }, inplace=True)
                 
-                # Return only the latest signal if requested
                 if latest_only:
                     signals = signals.iloc[[-1]].copy()
             
@@ -239,20 +229,12 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         3. Computes buying and selling pressure metrics
         4. Detects divergences between price trends and pressure trends
         5. Generates trading signals based on pressure and divergences
-        
-        Args:
-            data (pd.DataFrame): Historical price data for a single ticker with OHLCV columns.
-            
-        Returns:
-            pd.DataFrame: DataFrame with calculated signals and metrics.
         """
-        # Ensure data is sorted by date
         df = data.sort_index().copy()
         window = self.window
         if df.empty:
             return df
         
-        # Calculate normalized position: (close - low) / (high - low) using NumPy for speed
         high = df['high'].to_numpy(copy=False)
         low = df['low'].to_numpy(copy=False)
         close = df['close'].to_numpy(copy=False)
@@ -263,80 +245,55 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         norm_pos[valid_range] = (close[valid_range] - low[valid_range]) / price_range[valid_range]
         df['norm_pos'] = np.clip(norm_pos, 0.0, 1.0)
         
-        # Calculate volatility metrics (attempt Numba-powered rolling first)
         volatility = self._rolling_std(df['range'], window=window, min_periods=window).fillna(0.0)
         df['volatility'] = volatility
         vol_mean = self._rolling_mean(volatility, window=window, min_periods=window)
         vol_mean = vol_mean.where(vol_mean.abs() > _SAFE_EPS, 1.0)
         df['vol_ratio'] = (df['volatility'] / vol_mean).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-        
-        # Volatility-adjusted position
         df['vap'] = df['norm_pos'] * (1 + df['vol_ratio'])
         
-        # Z-score normalization of position
         norm_mean = self._rolling_mean(df['norm_pos'], window=window, min_periods=window)
         norm_std = self._rolling_std(df['norm_pos'], window=window, min_periods=window)
         safe_norm_std = norm_std.where(norm_std.abs() > _SAFE_EPS, 1.0)
         df['z_pos'] = ((df['norm_pos'] - norm_mean) / safe_norm_std).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         
-        # Initialize arrays for pressure metrics
-        n = len(df)
-        buying_pressure_arr = np.full(n, np.nan, dtype=np.float64)
-        selling_pressure_arr = np.full(n, np.nan, dtype=np.float64)
-        market_pressure_arr = np.full(n, np.nan, dtype=np.float64)
-        pressure_sig_arr = np.full(n, np.nan, dtype=np.float64)
+        df['buying_pressure'] = np.nan
+        df['selling_pressure'] = np.nan
+        df['market_pressure'] = np.nan
+        df['pressure_significance'] = np.nan
         
-        norm_values = df['norm_pos'].to_numpy(copy=False)
-        volume_arr = None
+        norm_positions = df['norm_pos'].to_numpy(dtype=np.float64, copy=False)
+        volumes = None
         if self.volume_weighted and 'volume' in df.columns:
-            volume_arr = np.nan_to_num(df['volume'].to_numpy(copy=False).astype(np.float64), nan=0.0)
-            if not np.any(volume_arr):
-                volume_arr = None
+            volumes = df['volume'].to_numpy(dtype=np.float64, copy=False)
+            volumes = np.nan_to_num(volumes, nan=0.0, posinf=0.0, neginf=0.0)
         
-        fit_beta = self._fit_beta_pressure
-        fit_multi = self._fit_multiple_distributions if self.use_multiple_dists else None
+        vectorized_success = False
+        if _HAS_SLIDING_WINDOW and len(df) > window:
+            try:
+                buy_arr, sell_arr, market_arr, sig_arr = self._compute_pressure_metrics_vectorized(
+                    norm_positions,
+                    volumes
+                )
+                idx_slice = df.index[window:]
+                df.loc[idx_slice, 'buying_pressure'] = buy_arr
+                df.loc[idx_slice, 'selling_pressure'] = sell_arr
+                df.loc[idx_slice, 'market_pressure'] = market_arr
+                df.loc[idx_slice, 'pressure_significance'] = sig_arr
+                vectorized_success = True
+            except Exception as err:
+                self.logger.debug(f"Vectorized pressure computation failed, falling back to loop: {err}")
         
-        # Suppress warnings from scipy during distribution fitting
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            for end_idx in range(window - 1, n):
-                start_idx = end_idx - window + 1
-                positions = norm_values[start_idx:end_idx + 1]
-                
-                weights = None
-                if volume_arr is not None:
-                    window_vol = volume_arr[start_idx:end_idx + 1]
-                    weight_sum = window_vol.sum()
-                    if weight_sum > 0:
-                        weights = window_vol / weight_sum
-                
-                try:
-                    if fit_multi:
-                        result = fit_multi(positions, weights)
-                        if result:
-                            buy_p, sell_p, pressure, sig = result
-                        else:
-                            buy_p, sell_p, pressure, sig = fit_beta(positions, weights)
-                    else:
-                        buy_p, sell_p, pressure, sig = fit_beta(positions, weights)
-                except Exception:
-                    buy_p = sell_p = pressure = sig = np.nan
-                
-                buying_pressure_arr[end_idx] = buy_p
-                selling_pressure_arr[end_idx] = sell_p
-                market_pressure_arr[end_idx] = pressure
-                pressure_sig_arr[end_idx] = sig
+        if not vectorized_success:
+            self._calculate_pressure_fallback(
+                df,
+                norm_positions,
+                volumes
+            )
         
-        df['buying_pressure'] = buying_pressure_arr
-        df['selling_pressure'] = selling_pressure_arr
-        df['market_pressure'] = market_pressure_arr
-        df['pressure_significance'] = pressure_sig_arr
-        
-        # Calculate trends for divergence detection
         df['price_trend'] = df['close'].pct_change(5).rolling(window=self.price_trend).mean().fillna(0)
         df['pressure_trend'] = df['market_pressure'].diff(5).rolling(window=self.pressure_trend).mean().fillna(0)
         
-        # Detect divergences
         df['divergence'] = 0
         bull_div = (
             (df['price_trend'] < (-1 * self.bull_div_threshold)) &
@@ -351,7 +308,6 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         df.loc[bull_div, 'divergence'] = 1
         df.loc[bear_div, 'divergence'] = -1
         
-        # Generate trading signals based on pressure and divergences
         df['signal'] = 0
         buy_conditions = (
             (df['market_pressure'] > self.pressure_threshold) & 
@@ -374,11 +330,9 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         df.loc[buy_conditions, 'signal'] = 1
         df.loc[sell_conditions, 'signal'] = -1
         
-        # If long_only, convert sell signals to exit signals
         if self.long_only:
             df.loc[df['signal'] == -1, 'signal'] = 0
         
-        # Set signal strength based on pressure and significance
         df['signal_strength'] = 0.0
         signal_mask = buy_conditions | sell_conditions
         df.loc[signal_mask, 'signal_strength'] = (
@@ -389,152 +343,253 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         return df[['open', 'close', 'high', 'low', 'norm_pos', 'market_pressure', 
                    'pressure_significance', 'divergence', 'signal', 'signal_strength']]
 
+    def _compute_pressure_metrics_vectorized(
+        self,
+        norm_positions: np.ndarray,
+        volumes: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute buying/selling pressure and significance for each rolling window using vectorized operations.
+        """
+        window = self.window
+        n = norm_positions.shape[0]
+        if n <= window:
+            return (
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64)
+            )
+        
+        if not _HAS_SLIDING_WINDOW:
+            raise RuntimeError("NumPy sliding_window_view is unavailable.")
+        
+        position_windows = sliding_window_view(norm_positions, window)
+        if position_windows.shape[0] == 0:
+            return (
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64)
+            )
+        
+        # Drop the final window to match legacy behavior (len - window results)
+        position_windows = position_windows[:-1]
+        beta_positions = np.clip(position_windows, 1e-6, 1 - 1e-6)
+        
+        if volumes is not None:
+            volume_windows = sliding_window_view(volumes, window)[:-1]
+            weight_sums = volume_windows.sum(axis=1, keepdims=True)
+            normalized_weights = np.divide(
+                volume_windows,
+                weight_sums,
+                out=np.full_like(volume_windows, 1.0 / window, dtype=np.float64),
+                where=weight_sums > 0
+            )
+        else:
+            normalized_weights = np.full_like(beta_positions, 1.0 / window, dtype=np.float64)
+        
+        if volumes is None:
+            means = beta_positions.mean(axis=1)
+            centered = beta_positions - means[:, None]
+            variances = np.mean(centered * centered, axis=1)
+        else:
+            means = np.sum(normalized_weights * beta_positions, axis=1)
+            centered = beta_positions - means[:, None]
+            variances = np.sum(normalized_weights * centered * centered, axis=1)
+        
+        variances = np.maximum(variances, 1e-9)
+        factor = (means * (1 - means)) / variances
+        valid_mask = factor > 1.0 + 1e-9
+        
+        alpha = np.empty_like(means)
+        beta_param = np.empty_like(means)
+        alpha[valid_mask] = means[valid_mask] * (factor[valid_mask] - 1)
+        beta_param[valid_mask] = (1 - means[valid_mask]) * (factor[valid_mask] - 1)
+        alpha[valid_mask] = np.maximum(alpha[valid_mask], 0.01)
+        beta_param[valid_mask] = np.maximum(beta_param[valid_mask], 0.01)
+        
+        selling = np.empty_like(means)
+        buying = np.empty_like(means)
+        market = np.empty_like(means)
+        
+        # Fallback for invalid beta parameters
+        fallback_mask = ~valid_mask
+        selling[fallback_mask] = 1 - means[fallback_mask]
+        buying[fallback_mask] = means[fallback_mask]
+        market[fallback_mask] = buying[fallback_mask] - selling[fallback_mask]
+        
+        if valid_mask.any():
+            selling_valid = beta.cdf(0.5, alpha[valid_mask], beta_param[valid_mask])
+            buying_valid = 1.0 - selling_valid
+            selling[valid_mask] = selling_valid
+            buying[valid_mask] = buying_valid
+            market[valid_mask] = buying_valid - selling_valid
+        
+        significance = self._ks_significance(position_windows)
+        
+        return buying, selling, market, significance
+
+    def _ks_significance(self, windows: np.ndarray) -> np.ndarray:
+        """
+        Calculate KS-test based significance against Uniform[0,1] for each window using vectorized operations.
+        """
+        num_windows, window = windows.shape
+        if window < 2 or num_windows == 0:
+            return np.zeros(num_windows, dtype=np.float64)
+        
+        clipped = np.clip(windows, 0.0, 1.0)
+        sorted_vals = np.sort(clipped, axis=1)
+        idx = np.arange(1, window + 1, dtype=np.float64)
+        
+        d_plus = idx / window - sorted_vals
+        d_minus = sorted_vals - (idx - 1) / window
+        d_stat = np.maximum(d_plus.max(axis=1), d_minus.max(axis=1))
+        
+        try:
+            p_values = ksone.sf(d_stat, window)
+        except Exception:
+            # Fallback to scalar kstest loop if ksone is unavailable
+            p_values = np.empty(num_windows, dtype=np.float64)
+            for i in range(num_windows):
+                _, p_value = kstest(sorted_vals[i], 'uniform')
+                p_values[i] = p_value
+        
+        p_values = np.clip(p_values, 0.0, 1.0)
+        return 1.0 - p_values
+    
+    def _calculate_pressure_fallback(
+        self,
+        df: pd.DataFrame,
+        norm_positions: np.ndarray,
+        volumes: Optional[np.ndarray]
+    ) -> None:
+        """
+        Fallback loop-based computation when the vectorized path is unavailable.
+        """
+        buying_pressure = []
+        selling_pressure = []
+        market_pressure = []
+        pressure_significance = []
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for i in range(self.window, len(df)):
+                start = i - self.window
+                end = i
+                window_positions = norm_positions[start:end]
+                
+                weights = None
+                if volumes is not None:
+                    window_weights = volumes[start:end]
+                    weight_sum = np.sum(window_weights)
+                    if weight_sum > 0:
+                        weights = window_weights / weight_sum
+                
+                try:
+                    buy_p, sell_p, pressure, sig = self._fit_beta_pressure(window_positions, weights)
+                except Exception:
+                    buy_p = sell_p = pressure = sig = np.nan
+                
+                buying_pressure.append(buy_p)
+                selling_pressure.append(sell_p)
+                market_pressure.append(pressure)
+                pressure_significance.append(sig)
+        
+        if buying_pressure:
+            idx_slice = df.index[self.window:]
+            df.loc[idx_slice, 'buying_pressure'] = buying_pressure
+            df.loc[idx_slice, 'selling_pressure'] = selling_pressure
+            df.loc[idx_slice, 'market_pressure'] = market_pressure
+            df.loc[idx_slice, 'pressure_significance'] = pressure_significance
+
     def _fit_beta_pressure(self, positions, weights=None):
         """
         Fit a Beta distribution to positions and calculate pressure metrics.
         The significance test is now against a Uniform[0,1] distribution
         to determine if the observed positions are non-random.
-
-        Args:
-            positions (np.array): Normalized positions in [0,1] range.
-            weights (np.array, optional): Weights for each position.
-
-        Returns:
-            tuple: (buying_pressure, selling_pressure, market_pressure, significance)
         """
-        # Clip values to ensure they're in the (0,1) range for beta distribution
-        # and also for the KS test against 'uniform' which expects values in [0,1]
-        # Using a slightly wider clip for KS test against uniform, as it can handle 0 and 1.
-        beta_positions = np.clip(positions, 1e-6, 1 - 1e-6) # For beta fitting
-        ks_positions = np.clip(positions, 0, 1) # For KS test against uniform
+        beta_positions = np.clip(positions, 1e-6, 1 - 1e-6)
+        ks_positions = np.clip(positions, 0, 1)
 
-        # Default equal weights if none provided
-        if weights is None or len(positions) == 0: # Added check for empty positions
+        if weights is None or len(positions) == 0:
             if len(positions) == 0:
-                # If no positions, cannot fit, return neutral and no significance
                 return 0.5, 0.5, 0.0, 0.0
             weights = np.ones_like(beta_positions) / len(beta_positions)
-        elif np.sum(weights) == 0: # Handle case where sum of weights is zero
+        elif np.sum(weights) == 0:
             weights = np.ones_like(beta_positions) / len(beta_positions)
 
-
-        # Method of moments with weights for Beta distribution fitting
-        # Using beta_positions for fitting the Beta distribution
         mean = np.sum(weights * beta_positions)
         var = np.sum(weights * (beta_positions - mean)**2)
-
-        # Safeguard against zero variance
         var = max(var, 1e-9)
 
-        # Compute alpha and beta parameters for the Beta distribution
-        # (mean * (1-mean) / var) must be > 1 for alpha and beta to be positive
-        # Add a small epsilon if it's too close to 1 or less.
         factor = (mean * (1 - mean) / var)
         if factor <= 1:
-            # This can happen with very low variance or mean near 0 or 1
-            # Fallback to a weakly informative prior or simpler pressure calc
-            # For now, let's calculate pressure based on mean if Beta params are tricky
-            simple_buying_pressure = mean # If mean is high, buying pressure is high
+            simple_buying_pressure = mean
             simple_selling_pressure = 1 - mean
             simple_market_pressure = simple_buying_pressure - simple_selling_pressure
             
-            # Significance calculation can still proceed with ks_positions
             try:
-                # Test if ks_positions deviate significantly from a Uniform[0,1] distribution
-                # A Uniform[0,1] distribution is equivalent to a Beta(1,1) distribution
-                # For scipy.stats.kstest, the 'uniform' distribution is defined on [0,1] by default
                 _stat, p_value = kstest(ks_positions, 'uniform')
-                significance = 1 - p_value  # High significance if p_value is low (i.e., not uniform)
+                significance = 1 - p_value
             except Exception:
-                # Fallback significance based on standard deviation
-                # 0.288675 is approx. sqrt(1/12), the std of Uniform[0,1]
                 if len(ks_positions) > 1:
                     std_dev_positions = np.std(ks_positions)
                     significance = 1 - np.min([1.0, std_dev_positions / 0.288675])
                 else:
-                    significance = 0.0 # Not enough data for std dev
+                    significance = 0.0
             return simple_buying_pressure, simple_selling_pressure, simple_market_pressure, significance
 
         alpha = mean * (factor - 1)
         beta_param = (1 - mean) * (factor - 1)
-
-        # Ensure parameters are positive
         alpha = max(alpha, 0.01)
         beta_param = max(beta_param, 0.01)
 
-        # Calculate pressure metrics using the fitted Beta distribution
         buying_pressure = 1 - beta.cdf(0.5, alpha, beta_param)
         selling_pressure = beta.cdf(0.5, alpha, beta_param)
         market_pressure = buying_pressure - selling_pressure
 
-        # Calculate statistical significance by testing against a Uniform distribution
         try:
-            # Test if ks_positions deviate significantly from a Uniform[0,1] distribution
-            # A Uniform[0,1] distribution is equivalent to a Beta(1,1) distribution
-            # For scipy.stats.kstest, the 'uniform' distribution is defined on [0,1] by default
             _stat, p_value = kstest(ks_positions, 'uniform')
-            significance = 1 - p_value  # High significance if p_value is low (i.e., not uniform)
-        except Exception: # Catch more generic exceptions from kstest
-            # Fallback significance based on standard deviation
-            # 0.288675 is approx. sqrt(1/12), the std of Uniform[0,1]
+            significance = 1 - p_value
+        except Exception:
             if len(ks_positions) > 1:
                 std_dev_positions = np.std(ks_positions)
-                # Ensure std_dev_positions is not zero to avoid division by zero if 0.288675 is also zero (highly unlikely)
-                # or if std_dev_positions is extremely small leading to large ratio
                 significance = 1 - np.min([1.0, std_dev_positions / 0.288675 if 0.288675 > 1e-9 else 1.0])
             else:
-                significance = 0.0 # Not enough data for std dev
+                significance = 0.0
 
         return buying_pressure, selling_pressure, market_pressure, significance
     
     def _fit_multiple_distributions(self, positions, weights=None):
         """
         Fit multiple distributions and select the best one based on fit quality.
-        
-        This method tries both Beta distribution and transformed Normal distribution,
-        then selects the one that provides the better statistical fit to the data.
-        
-        Args:
-            positions (np.array): Normalized positions in [0,1] range.
-            weights (np.array, optional): Weights for each position.
-            
-        Returns:
-            tuple: (buying_pressure, selling_pressure, market_pressure, significance)
-                  or None if fitting fails
         """
         try:
-            # Fit Beta distribution
             beta_result = self._fit_beta_pressure(positions, weights)
             
-            # Fit transformed Normal distribution (logit transformation)
             transformed = -np.log(1/np.clip(positions, 1e-6, 1-1e-6) - 1)
             
-            # Default equal weights if none provided
             if weights is None:
                 weights = np.ones_like(positions) / len(positions)
             
-            # Fit normal to transformed data
             mean = np.sum(weights * transformed)
             var = np.sum(weights * (transformed - mean)**2)
             std = np.sqrt(max(var, 1e-9))
             
-            # Calculate pressure in transformed space
-            # 0.5 in [0,1] space maps to 0 in transformed space
             norm_buying_pressure = 1 - norm.cdf(0, mean, std)
             norm_selling_pressure = norm.cdf(0, mean, std)
             norm_market_pressure = norm_buying_pressure - norm_selling_pressure
             
-            # Calculate significance
             try:
                 ks_stat, p_value = kstest(transformed, 'norm', args=(mean, std))
                 norm_significance = 1 - p_value
-            except:
+            except Exception:
                 norm_significance = 0.5
             
-            # Select the distribution with better fit (higher significance)
             if norm_significance > beta_result[3]:
                 return norm_buying_pressure, norm_selling_pressure, norm_market_pressure, norm_significance
             else:
                 return beta_result
-        except:
+        except Exception:
             return None

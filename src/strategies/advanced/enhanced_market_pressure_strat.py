@@ -24,6 +24,9 @@ from src.strategies.base_strat import BaseStrategy
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
+_SAFE_EPS = 1e-9
+
+
 class EnhancedMarketPressureStrategy(BaseStrategy):
     """
     Enhanced Market Pressure Analysis Strategy.
@@ -105,6 +108,24 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             'transaction_cost_pct': params.get('transaction_cost_pct', 0.001),
         }
         self.risk_manager = RiskManager(**risk_params)
+
+    @staticmethod
+    def _rolling_mean(series: pd.Series, window: int, min_periods: Optional[int] = None) -> pd.Series:
+        """Attempt to compute rolling mean with Numba acceleration; fallback to default."""
+        rolling_kwargs = {'window': window, 'min_periods': min_periods}
+        try:
+            return series.rolling(engine='numba', **rolling_kwargs).mean()
+        except Exception:
+            return series.rolling(**rolling_kwargs).mean()
+
+    @staticmethod
+    def _rolling_std(series: pd.Series, window: int, min_periods: Optional[int] = None) -> pd.Series:
+        """Attempt to compute rolling std with Numba acceleration; fallback to default."""
+        rolling_kwargs = {'window': window, 'min_periods': min_periods}
+        try:
+            return series.rolling(engine='numba', **rolling_kwargs).std()
+        except Exception:
+            return series.rolling(**rolling_kwargs).std()
     
     def generate_signals(
         self,
@@ -226,86 +247,90 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             pd.DataFrame: DataFrame with calculated signals and metrics.
         """
         # Ensure data is sorted by date
-        data = data.sort_index()
-        df = data.copy()
+        df = data.sort_index().copy()
+        window = self.window
+        if df.empty:
+            return df
         
-        # Calculate normalized position: (close - low) / (high - low)
-        df['range'] = df['high'] - df['low']
-        df['norm_pos'] = np.where(
-            df['range'] > 0,
-            (df['close'] - df['low']) / df['range'],
-            0.5  # Default to middle when range is zero
-        )
+        # Calculate normalized position: (close - low) / (high - low) using NumPy for speed
+        high = df['high'].to_numpy(copy=False)
+        low = df['low'].to_numpy(copy=False)
+        close = df['close'].to_numpy(copy=False)
+        price_range = high - low
+        df['range'] = price_range
+        norm_pos = np.full_like(price_range, 0.5, dtype=np.float64)
+        valid_range = price_range > 0
+        norm_pos[valid_range] = (close[valid_range] - low[valid_range]) / price_range[valid_range]
+        df['norm_pos'] = np.clip(norm_pos, 0.0, 1.0)
         
-        # Calculate volatility metrics
-        df['volatility'] = df['range'].rolling(window=self.window).std().fillna(0)
-        df['vol_ratio'] = df['volatility'] / df['volatility'].rolling(window=self.window).mean().replace(0, 1e-9).fillna(1)
+        # Calculate volatility metrics (attempt Numba-powered rolling first)
+        volatility = self._rolling_std(df['range'], window=window, min_periods=window).fillna(0.0)
+        df['volatility'] = volatility
+        vol_mean = self._rolling_mean(volatility, window=window, min_periods=window)
+        vol_mean = vol_mean.where(vol_mean.abs() > _SAFE_EPS, 1.0)
+        df['vol_ratio'] = (df['volatility'] / vol_mean).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         
         # Volatility-adjusted position
         df['vap'] = df['norm_pos'] * (1 + df['vol_ratio'])
         
         # Z-score normalization of position
-        df['z_pos'] = (df['norm_pos'] - df['norm_pos'].rolling(window=self.window).mean()) / \
-                      df['norm_pos'].rolling(window=self.window).std().replace(0, 1e-9).fillna(1)
+        norm_mean = self._rolling_mean(df['norm_pos'], window=window, min_periods=window)
+        norm_std = self._rolling_std(df['norm_pos'], window=window, min_periods=window)
+        safe_norm_std = norm_std.where(norm_std.abs() > _SAFE_EPS, 1.0)
+        df['z_pos'] = ((df['norm_pos'] - norm_mean) / safe_norm_std).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         
-        # Initialize columns for pressure metrics
-        df['buying_pressure'] = np.nan
-        df['selling_pressure'] = np.nan
-        df['market_pressure'] = np.nan
-        df['pressure_significance'] = np.nan
+        # Initialize arrays for pressure metrics
+        n = len(df)
+        buying_pressure_arr = np.full(n, np.nan, dtype=np.float64)
+        selling_pressure_arr = np.full(n, np.nan, dtype=np.float64)
+        market_pressure_arr = np.full(n, np.nan, dtype=np.float64)
+        pressure_sig_arr = np.full(n, np.nan, dtype=np.float64)
         
-        # Process data using vectorized operations where possible
-        buying_pressure = []
-        selling_pressure = []
-        market_pressure = []
-        pressure_significance = []
+        norm_values = df['norm_pos'].to_numpy(copy=False)
+        volume_arr = None
+        if self.volume_weighted and 'volume' in df.columns:
+            volume_arr = np.nan_to_num(df['volume'].to_numpy(copy=False).astype(np.float64), nan=0.0)
+            if not np.any(volume_arr):
+                volume_arr = None
+        
+        fit_beta = self._fit_beta_pressure
+        fit_multi = self._fit_multiple_distributions if self.use_multiple_dists else None
         
         # Suppress warnings from scipy during distribution fitting
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            
-            # Process each window
-            for i in range(self.window, len(df)):
-                window_data = df.iloc[i-self.window:i]
-                positions = window_data['norm_pos'].values
+            for end_idx in range(window - 1, n):
+                start_idx = end_idx - window + 1
+                positions = norm_values[start_idx:end_idx + 1]
                 
-                # Weight by volume if specified
                 weights = None
-                if self.volume_weighted and 'volume' in window_data.columns:
-                    weights = window_data['volume'].values
-                    if np.sum(weights) > 0:
-                        weights = weights / np.sum(weights)
-                    else:
-                        weights = None
+                if volume_arr is not None:
+                    window_vol = volume_arr[start_idx:end_idx + 1]
+                    weight_sum = window_vol.sum()
+                    if weight_sum > 0:
+                        weights = window_vol / weight_sum
                 
-                # Fit distribution and calculate pressure
                 try:
-                    if self.use_multiple_dists:
-                        result = self._fit_multiple_distributions(positions, weights)
+                    if fit_multi:
+                        result = fit_multi(positions, weights)
                         if result:
                             buy_p, sell_p, pressure, sig = result
                         else:
-                            buy_p, sell_p, pressure, sig = self._fit_beta_pressure(positions, weights)
+                            buy_p, sell_p, pressure, sig = fit_beta(positions, weights)
                     else:
-                        buy_p, sell_p, pressure, sig = self._fit_beta_pressure(positions, weights)
-                        
-                    buying_pressure.append(buy_p)
-                    selling_pressure.append(sell_p)
-                    market_pressure.append(pressure)
-                    pressure_significance.append(sig)
-                except:
-                    # Default values if fitting fails
-                    buying_pressure.append(np.nan)
-                    selling_pressure.append(np.nan)
-                    market_pressure.append(np.nan)
-                    pressure_significance.append(np.nan)
+                        buy_p, sell_p, pressure, sig = fit_beta(positions, weights)
+                except Exception:
+                    buy_p = sell_p = pressure = sig = np.nan
+                
+                buying_pressure_arr[end_idx] = buy_p
+                selling_pressure_arr[end_idx] = sell_p
+                market_pressure_arr[end_idx] = pressure
+                pressure_sig_arr[end_idx] = sig
         
-            # Add calculated metrics to dataframe
-            if len(buying_pressure) > 0:
-                df.loc[df.index[self.window:], 'buying_pressure'] = buying_pressure
-                df.loc[df.index[self.window:], 'selling_pressure'] = selling_pressure
-                df.loc[df.index[self.window:], 'market_pressure'] = market_pressure
-                df.loc[df.index[self.window:], 'pressure_significance'] = pressure_significance
+        df['buying_pressure'] = buying_pressure_arr
+        df['selling_pressure'] = selling_pressure_arr
+        df['market_pressure'] = market_pressure_arr
+        df['pressure_significance'] = pressure_sig_arr
         
         # Calculate trends for divergence detection
         df['price_trend'] = df['close'].pct_change(5).rolling(window=self.price_trend).mean().fillna(0)
@@ -313,8 +338,16 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         
         # Detect divergences
         df['divergence'] = 0
-        bull_div = (df['price_trend'] < (-1* self.bull_div_threshold)) & (df['pressure_trend'] > self.bull_div_threshold) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
-        bear_div = (df['price_trend'] > self.bear_div_threshold) & (df['pressure_trend'] < (-1*self.bear_div_threshold)) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        bull_div = (
+            (df['price_trend'] < (-1 * self.bull_div_threshold)) &
+            (df['pressure_trend'] > self.bull_div_threshold) &
+            (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        )
+        bear_div = (
+            (df['price_trend'] > self.bear_div_threshold) &
+            (df['pressure_trend'] < (-1 * self.bear_div_threshold)) &
+            (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        )
         df.loc[bull_div, 'divergence'] = 1
         df.loc[bear_div, 'divergence'] = -1
         
@@ -338,7 +371,6 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             (df['pressure_significance'] > self.confidence_threshold * 0.9)
         )
         
-        # Set signals
         df.loc[buy_conditions, 'signal'] = 1
         df.loc[sell_conditions, 'signal'] = -1
         
@@ -348,12 +380,12 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         
         # Set signal strength based on pressure and significance
         df['signal_strength'] = 0.0
-        df.loc[buy_conditions | sell_conditions, 'signal_strength'] = (
-            df.loc[buy_conditions | sell_conditions, 'pressure_significance'] * 
-            df.loc[buy_conditions | sell_conditions, 'market_pressure'].abs()
+        signal_mask = buy_conditions | sell_conditions
+        df.loc[signal_mask, 'signal_strength'] = (
+            df.loc[signal_mask, 'pressure_significance'] * 
+            df.loc[signal_mask, 'market_pressure'].abs()
         )
         
-        # Return the needed columns
         return df[['open', 'close', 'high', 'low', 'norm_pos', 'market_pressure', 
                    'pressure_significance', 'divergence', 'signal', 'signal_strength']]
 

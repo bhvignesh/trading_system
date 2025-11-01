@@ -1,17 +1,17 @@
 {
-  "ticker": "HDFCBANK.BO",
+  "ticker": "SBIN.BO",
   "model_type": "EGARCH-X",
   "is_backup": false,
   "order": [
     1,
     1
   ],
-  "aic": 624.8318955161651,
+  "aic": 853.6205555582196,
   "mse": 0.0,
   "mae": 0.0,
   "directional_accuracy": 0.0,
   "vol_ratio": 1.0,
   "n_components": 5,
-  "trained_at": "2025-11-01T16:55:39.946823",
+  "trained_at": "2025-11-01T17:05:56.032813",
   "params_hash": "92df2e96674a440a0bf0156578e5a4a9"
 }

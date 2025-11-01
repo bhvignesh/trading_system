@@ -6,12 +6,12 @@
     1,
     1
   ],
-  "aic": 774.5664279284854,
+  "aic": 774.5305045929101,
   "mse": 0.0,
   "mae": 0.0,
   "directional_accuracy": 0.0,
   "vol_ratio": 1.0,
   "n_components": 5,
-  "trained_at": "2025-06-29T15:07:57.077977",
+  "trained_at": "2025-11-01T17:01:41.887696",
   "params_hash": "92df2e96674a440a0bf0156578e5a4a9"
 }
